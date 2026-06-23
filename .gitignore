@@ -1,0 +1,16 @@
+# Kaggle
+vendor/
+deck.csv
+
+# Training output / checkpoints
+out/
+
+# Kaggle submission artifacts / downloaded archives
+*.tar.gz
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

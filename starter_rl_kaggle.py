@@ -2,7 +2,6 @@
 # It also serves as an example for the Search API and the Battle Start/Finish APIs. Pokémon TCG cards have a wide variety of effects. It can be difficult even to determine things such as how much damage an attack would deal to the opponent's Pokémon right now, or whether an Item card drawn from the deck would be playable.
 # By using the Search API, you can find out, for example, what the actual outcome would be if an attack were used. This should be useful for rule-based agents as well.
 
-import glob
 import math
 import os
 import random
@@ -13,7 +12,14 @@ import torch.nn
 import torch.nn.functional
 import torch.optim
 
-sys.path.append(glob.glob('/kaggle/input/**/cg-lib', recursive=True)[0])
+# Local run: the proprietary `cg` simulator is vendored under vendor/cg-lib/
+# (downloaded from the Kaggle competition; see README/CLAUDE.md). Override with
+# CG_LIB_PATH. This replaces the Kaggle-only glob('/kaggle/input/**/cg-lib').
+_CG_LIB_PATH = os.environ.get(
+    "CG_LIB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "cg-lib"),
+)
+sys.path.insert(0, _CG_LIB_PATH)
 
 from cg.api import (
     AreaType,
@@ -553,6 +559,18 @@ def progress(count: int, text: str):
 # A sample deck for training.
 sample_deck = [721,721,722,722,722,722,723,723,723,723,1092,1121,1121,1145,1145,1163,1163,1219,1219,1219,1219,1227,1227,1227,1227,1262,1262,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]
 
+# Loop sizes are CLI-tunable so the training loop can run a tiny local smoke
+# pass (e.g. --iterations 1 --eval-games 2 --selfplay-games 2 --search-count 2)
+# while keeping the Kaggle defaults when run with no arguments.
+import argparse
+_p = argparse.ArgumentParser(description="RL+MCTS self-play training")
+_p.add_argument("--iterations", type=int, default=5)
+_p.add_argument("--eval-games", type=int, default=50)
+_p.add_argument("--selfplay-games", type=int, default=100)
+_p.add_argument("--search-count", type=int, default=SEARCH_COUNT)
+_args = _p.parse_args()
+SEARCH_COUNT = _args.search_count
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = MyModel(128, 2, 256, 1, 1)
 model = model.to(device)
@@ -562,7 +580,7 @@ loss_fn_dec = torch.nn.HuberLoss(reduction="none", delta=0.1)  # Decoder loss fu
 os.makedirs("out", exist_ok=True)
 
 # The main training loop.
-for counter in range(5):
+for counter in range(_args.iterations):
     torch.save(model.state_dict(), "out/model" + str(counter) + ".pth")  # Save the current model.
     sample_list:list[LearnSample] = []  # List of training data samples.
     
@@ -571,7 +589,7 @@ for counter in range(5):
         # Evaluation
         results = [0, 0, 0]
 
-        for i in progress(50, "Evaluating... "):
+        for i in progress(_args.eval_games, "Evaluating... "):
             obs, start_data = battle_start(sample_deck, sample_deck)
             if start_data.errorPlayer >= 0:
                 error = "Deck error."
@@ -607,7 +625,7 @@ for counter in range(5):
         print("Evaluation win rate " + str(100 * results[0] // (results[0] + results[1])) + "%", flush=True)
 
         # Self Play
-        for _ in progress(100, "Training Data Collecting... "):
+        for _ in progress(_args.selfplay_games, "Training Data Collecting... "):
             obs, _ = battle_start(sample_deck, sample_deck)
             samples:list[list[LearnSample]] = [[], []]  # [Player0 samples, Player1 samples]
             while True:
