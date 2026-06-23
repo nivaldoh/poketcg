@@ -5,6 +5,9 @@ deck.csv
 # Training output / checkpoints
 out/
 
+# Downloaded Kaggle datasets (card metadata, episode replays)
+data/
+
 # Kaggle submission artifacts / downloaded archives
 *.tar.gz
 *.zip

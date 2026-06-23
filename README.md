@@ -2,9 +2,10 @@
 - Start with minimal code that can be verified, always aim for simplicity, avoid verbosity, avoid boilerplate and things like backwards-compatibility. We want to keep our code clean and readable. Code/repo changes should ideally be minimal, incremental/decremental and verifiable.
 - Be careful with assumptions, and always explicitly state any that you think you need to make. Point out any information that you think you might be missing, and I will help you find it and make key decisions.
 - We should aim to structure the repo such that it makes it easier for you (Claude Code) to work with it.
+- We should keep the work log lean and up-to-date so that we can properly keep track of what has been tried/done so far.
 
 # First goal
-- Set up the repo to work locally (the provided starter code was meant to run in a Kaggle Notebook. Our environment is Ubuntu WSL 2 through Windows 11). Run an initial test with the provided starter code to ensure we have a functional starting point before we start making modifications. We can take the starter RL+MCTS code and get it to run and do some training.
+- We're now able to run test battles with an untrained model. Our next step should be to understand what training data we have available and how to obtain it. Then we should update the Training section in this README accordingly. Once we have the info we need, we should do a small training run for the existing RL model and make sure that it's working properly.
 
 # Context
 
@@ -111,4 +112,42 @@ Description of the move effect or additional rule text.
 - We need to make our work have verifiable results as much as possible, to ensure we're actually making progress as we iterate. Some things will be hard to verify, so we'll have to start small and gradually think more about this as we go. For instance, checking whether a battle resulted in a win or loss should be trivial, but benchmarking intermediate factors to see what led to that result will be more challenging.
 
 # Training
-- There seems to be two ways to gather training data: self-play and retrieving ladder data from time to time. I don't know more details about how either of these would work, so we'll have to gather more info as we go.
+
+Two sources of training data. Only self-play is wired up today.
+
+## 1. Self-play (implemented)
+
+`starter_rl_kaggle.py` is a working RL+MCTS self-play trainer. Per iteration it:
+- runs the `battle_start → battle_select → battle_finish` loop;
+- drives MCTS via the Search API (`search_begin/search_step/search_end`), *determinizing* the opponent's hidden cards (samples your own deck/prize from known IDs, fills opponent slots with placeholders — Snorlax `1072`, basic energy `1`);
+- emits `LearnSample`s (a scalar **value** + per-action **policy** + sparse encoder/decoder vectors); targets come from MCTS visit stats and a TD(λ=0.9) backup of the game result;
+- trains the Transformer and checkpoints to `out/modelN.pth` (saved at the *start* of iteration N, so `modelN` is the model *before* iteration N's updates).
+
+Card metadata is read at runtime from the compiled SDK (`all_card_data()`, `all_attack()`), not from any file.
+
+Fast local smoke pass (guaranteed ≥1 gradient step):
+```bash
+python starter_rl_kaggle.py --iterations 2 --eval-games 2 \
+    --selfplay-games 4 --search-count 2 --batch-size 8
+```
+Prints an eval win rate and, per iteration, `samples=… batches=… mean_loss=…`. Gotcha: the default `--batch-size` is 128, so a handful of self-play games produces no full batch (`batch_count = samples // batch_size == 0`) and thus *no* gradient step — hence the small `--batch-size` for smoke runs. No args = heavy Kaggle defaults (5 iters, 50 eval / 100 self-play games, search 10, batch 128).
+
+## 2. Episode replays / ladder data (available, not yet wired up)
+
+Top-ladder games can be pulled from Kaggle for behavior cloning / imitation learning. Auth is already configured (the `kaggle` CLI v2.2.2 reads `~/.kaggle/access_token`). The chain (competition `pokemon-tcg-ai-battle`):
+```bash
+kaggle competitions leaderboard pokemon-tcg-ai-battle --show   # → teamId
+kaggle competitions team-submissions <team_id>                 # → submission id + score
+kaggle competitions episodes <submission_id>                   # → episode ids (~168/sub)
+kaggle competitions replay <episode_id> -p data/replays        # → episode-<id>-replay.json
+```
+(Kaggle simulation-competitions guide: https://github.com/Kaggle/kaggle-cli/blob/main/docs/simulation_competitions.md)
+
+A replay is a Kaggle episode JSON: `rewards` (final result, e.g. `[1,-1]`) + `steps`, a list of per-step `[agent0, agent1]` entries (`action`, `observation`, `reward`, `status`). The **acting** agent has `status="ACTIVE"` with a populated `observation.select`; its `action` is the option indices it chose (the first real action is the 60-card deck). Crucially, `observation` is already in the **same dict format the cg SDK uses** (`current`/`select`/…), so BC/IL can reuse `get_encoder_input`/`get_decoder_input` to turn each `(observation, action)` into a supervised policy target — no env reverse-engineering. What's missing is a small parser/training script: **the `cg` SDK has no replay loader.**
+
+Already fetched locally (all under gitignored `data/`): a sample replay `data/replays/episode-81475913-replay.json` (top team, 1 game) and the card-metadata `data/EN_Card_Data.csv` / `data/JP_Card_Data.csv` (the matching ID-list PDFs are ~320 MB and were skipped; both CSVs and PDFs are attached to `pokemon-tcg-ai-battle` and the strategy track).
+
+**Open decision:** build the replay → BC/IL parser next, or push further on self-play first.
+
+# Environment
+Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token.

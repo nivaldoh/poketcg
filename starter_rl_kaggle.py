@@ -568,6 +568,7 @@ _p.add_argument("--iterations", type=int, default=5)
 _p.add_argument("--eval-games", type=int, default=50)
 _p.add_argument("--selfplay-games", type=int, default=100)
 _p.add_argument("--search-count", type=int, default=SEARCH_COUNT)
+_p.add_argument("--batch-size", type=int, default=128)
 _args = _p.parse_args()
 SEARCH_COUNT = _args.search_count
 
@@ -656,8 +657,9 @@ for counter in range(_args.iterations):
     print("Training Start.")
     model.train()
     random.shuffle(sample_list)
-    BATCH_SIZE = 128
+    BATCH_SIZE = _args.batch_size
     batch_count = len(sample_list) // BATCH_SIZE
+    loss_sum = 0.0
     for i in range(batch_count):
         # Prepare a batch of data.
         input_enc = LearnInput()
@@ -708,4 +710,10 @@ for counter in range(_args.iterations):
         # Backpropagate the loss and update model parameters.
         loss.backward()
         optimizer.step()
-    print("Training Finish.")
+        loss_sum += loss.item()
+    mean_loss = loss_sum / batch_count if batch_count else float("nan")
+    print(
+        f"Training Finish. samples={len(sample_list)} batches={batch_count} "
+        f"mean_loss={mean_loss:.4f}",
+        flush=True,
+    )

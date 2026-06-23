@@ -1,0 +1,25 @@
+Work log (lean — what's been tried/done).
+
+2026-06-23
+- Repo runs locally: run_battle.py (random vs random) green; cg SDK vendored at vendor/cg-lib/.
+- Investigated training data. Findings:
+  - Self-play is the only implemented mechanism (starter_rl_kaggle.py). Episode
+    replays exist on Kaggle but the cg SDK has no replay loader (BC/IL needs a
+    custom parser). Card metadata loads at runtime from the compiled SDK.
+- starter_rl_kaggle.py: added --batch-size flag (default 128) + per-iteration
+  "samples=/batches=/mean_loss=" print, so a smoke run can force a real gradient
+  step (prior --selfplay-games 2 config collected <128 samples => batch_count 0,
+  no update).
+- Verified small training run works end-to-end:
+    python starter_rl_kaggle.py --iterations 2 --eval-games 2 --selfplay-games 4 --search-count 2 --batch-size 8
+  iter0 samples=168 batches=21 mean_loss=0.1449; iter1 samples=99 batches=12
+  mean_loss=0.1196. out/model0.pth vs out/model1.pth hashes differ => trained
+  weights persisted.
+- Kaggle data fetched (auth via ~/.kaggle/access_token) into gitignored data/:
+    data/EN_Card_Data.csv, data/JP_Card_Data.csv (card metadata)
+    data/replays/episode-81475913-replay.json (sample top-team replay; format is
+    Kaggle episode JSON whose observation is already in cg-SDK dict form).
+- Rewrote README Training section with the above (self-play how-to + replay/BC-IL
+  pipeline + commands).
+
+Open decision: build replay -> BC/IL parser next, or push further on self-play.
