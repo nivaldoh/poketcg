@@ -39,6 +39,10 @@ from cg.api import (
 )
 from cg.game import battle_start, battle_finish, battle_select
 
+# The rule-based Mega-Lucario agent, used as a second training/eval opponent
+# alongside RL self-play. Ported to an importable module from the Kaggle export.
+from rulebased_lucario import agent as rulebased_agent, my_deck as lucario_deck
+
 # Load all card data from the API's helper function
 all_card = all_card_data()
 # Create a lookup table (dictionary) to quickly access card data by its cardId
@@ -569,78 +573,104 @@ _p.add_argument("--eval-games", type=int, default=50)
 _p.add_argument("--selfplay-games", type=int, default=100)
 _p.add_argument("--search-count", type=int, default=SEARCH_COUNT)
 _p.add_argument("--batch-size", type=int, default=128)
+_p.add_argument("--load", type=str, default=None, help="checkpoint to continue training from")
+_p.add_argument("--out-prefix", type=str, default="model", help="checkpoint filename prefix under out/")
+_p.add_argument("--rb-frac", type=float, default=0.5, help="fraction of self-play games played vs the rule-based agent")
 _args = _p.parse_args()
 SEARCH_COUNT = _args.search_count
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = MyModel(128, 2, 256, 1, 1)
 model = model.to(device)
+if _args.load:
+    model.load_state_dict(torch.load(_args.load, map_location=device))
+    print(f"Loaded initial weights from {_args.load}", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 loss_fn_enc = torch.nn.HuberLoss(delta=0.2)  # Encoder loss function
 loss_fn_dec = torch.nn.HuberLoss(reduction="none", delta=0.1)  # Decoder loss function
 os.makedirs("out", exist_ok=True)
 
+def eval_winrate(n_games: int, opponent: str) -> tuple[int, list[int]]:
+    """Win rate (%) of the MCTS agent (sample_deck) vs an opponent over n_games.
+
+    opponent: "random" (mirror sample_deck) or "rulebased" (Lucario deck).
+    Returns (win_rate, [wins, losses, draws]).
+    """
+    results = [0, 0, 0]
+    for i in progress(n_games, f"Evaluating vs {opponent}... "):
+        your_index = i % 2
+        if opponent == "rulebased":
+            decks = [sample_deck, sample_deck]
+            decks[1 - your_index] = lucario_deck  # opponent plays Lucario
+            obs, start_data = battle_start(decks[0], decks[1])
+        else:
+            obs, start_data = battle_start(sample_deck, sample_deck)
+        if start_data.errorPlayer >= 0:
+            raise ValueError(f"Deck rejected: errorType={start_data.errorType}")
+        while obs["current"]["result"] < 0:
+            if obs["current"]["yourIndex"] == your_index:
+                selected, _ = mcts_agent(obs, sample_deck, model)
+            elif opponent == "rulebased":
+                selected = rulebased_agent(obs)
+            else:
+                selected = random_agent(obs)
+            obs = battle_select(selected)
+        battle_finish()
+        r = obs["current"]["result"]
+        if r == 2:
+            results[2] += 1
+        elif r == your_index:
+            results[0] += 1
+        else:
+            results[1] += 1
+    total = results[0] + results[1]
+    return (100 * results[0] // total if total else 0, results)
+
 # The main training loop.
 for counter in range(_args.iterations):
-    torch.save(model.state_dict(), "out/model" + str(counter) + ".pth")  # Save the current model.
+    torch.save(model.state_dict(), f"out/{_args.out_prefix}{counter}.pth")  # Save the current model.
     sample_list:list[LearnSample] = []  # List of training data samples.
     
     model.eval()
     with torch.inference_mode():
-        # Evaluation
-        results = [0, 0, 0]
+        # Evaluation against a random opponent (baseline) and the rule-based agent
+        # (the meaningful progress signal).
+        rate_rng, _ = eval_winrate(_args.eval_games, "random")
+        print(f"Evaluation win rate vs random: {rate_rng}%", flush=True)
+        rate_rb, res_rb = eval_winrate(_args.eval_games, "rulebased")
+        print(f"Evaluation win rate vs rule-based: {rate_rb}% (W/L/D={res_rb})", flush=True)
 
-        for i in progress(_args.eval_games, "Evaluating... "):
-            obs, start_data = battle_start(sample_deck, sample_deck)
-            if start_data.errorPlayer >= 0:
-                error = "Deck error."
-                if start_data.errorType == 1:
-                    error = "The deck contains invalid card ID."
-                elif start_data.errorType == 2:
-                    error = "You can include up to four cards with the same name in the deck, excluding basic Energy cards."
-                elif start_data.errorType == 3:
-                    error = "There are no Basic Pokémon in the deck."
-                elif start_data.errorType == 4:
-                    error = "You can include only one Ace Spec card in the deck."
-                raise ValueError(error)
-            your_index = i % 2
-            while True:
-                # Break the loop if the game has ended.
-                if obs["current"]["result"] >= 0:
-                    break
-
-                if obs["current"]["yourIndex"] == your_index:
-                    selected, _ = mcts_agent(obs, sample_deck, model)
-                else:
-                    selected = random_agent(obs)
-                obs = battle_select(selected)
-            
-            battle_finish()  # Finalize the game.
-
-            if obs["current"]["result"] == 2:  # Draw
-                results[2] += 1
-            elif obs["current"]["result"] == your_index:  # Win
-                results[0] += 1
-            else: # Lose
-                results[1] += 1
-        print("Evaluation win rate " + str(100 * results[0] // (results[0] + results[1])) + "%", flush=True)
-
-        # Self Play
-        for _ in progress(_args.selfplay_games, "Training Data Collecting... "):
-            obs, _ = battle_start(sample_deck, sample_deck)
+        # Self Play — alternate the opponent between the RL agent itself
+        # (self-play; learn from both sides) and the rule-based Lucario agent
+        # (learn from the RL learner's side only). --rb-frac controls the mix.
+        for g in progress(_args.selfplay_games, "Training Data Collecting... "):
+            vs_rb = int((g + 1) * _args.rb_frac) > int(g * _args.rb_frac)
+            learner = g % 2  # alternate which player index the RL learner is
+            if vs_rb:
+                decks = [sample_deck, sample_deck]
+                decks[1 - learner] = lucario_deck  # opponent plays Lucario
+                obs, _ = battle_start(decks[0], decks[1])
+            else:
+                obs, _ = battle_start(sample_deck, sample_deck)
             samples:list[list[LearnSample]] = [[], []]  # [Player0 samples, Player1 samples]
             while True:
                 if obs["current"]["result"] >= 0:
                     break
 
-                # The MCTS agent generates an action and a training sample.
-                selected, sample = mcts_agent(obs, sample_deck, model)
-                samples[obs["current"]["yourIndex"]].append(sample)
+                yi = obs["current"]["yourIndex"]
+                if vs_rb and yi != learner:
+                    selected = rulebased_agent(obs)  # opponent move; no sample collected
+                else:
+                    # The MCTS agent generates an action and a training sample.
+                    selected, sample = mcts_agent(obs, sample_deck, model)
+                    samples[yi].append(sample)
                 obs = battle_select(selected)
-            
+
             battle_finish()  # Finalize the game.
 
             # Calculate the training labels and add them to the training data list.
+            # In rule-based games only the learner side has samples; the other
+            # side's empty list makes the loop below a no-op for that player.
             for i in range(2):
                 LAMBDA = 0.9
                 # The final value is 1.0 for a win and -1.0 for a loss.
@@ -717,3 +747,10 @@ for counter in range(_args.iterations):
         f"mean_loss={mean_loss:.4f}",
         flush=True,
     )
+
+# Save the fully-trained model. The per-iteration "out/<prefix>N.pth" checkpoints
+# above are written *before* each iteration's training, so this final save captures
+# the last iteration's updates (which would otherwise be lost).
+final_path = f"out/{_args.out_prefix}_final.pth"
+torch.save(model.state_dict(), final_path)
+print(f"Saved final trained model to {final_path}", flush=True)

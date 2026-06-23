@@ -130,7 +130,13 @@ Fast local smoke pass (guaranteed ≥1 gradient step):
 python starter_rl_kaggle.py --iterations 2 --eval-games 2 \
     --selfplay-games 4 --search-count 2 --batch-size 8
 ```
-Prints an eval win rate and, per iteration, `samples=… batches=… mean_loss=…`. Gotcha: the default `--batch-size` is 128, so a handful of self-play games produces no full batch (`batch_count = samples // batch_size == 0`) and thus *no* gradient step — hence the small `--batch-size` for smoke runs. No args = heavy Kaggle defaults (5 iters, 50 eval / 100 self-play games, search 10, batch 128).
+Prints per-iteration `samples=… batches=… mean_loss=…` and eval win-rate vs **both** a random opponent and the rule-based agent. Gotcha: the default `--batch-size` is 128, so a handful of self-play games produces no full batch (`batch_count = samples // batch_size == 0`) and thus *no* gradient step — hence the small `--batch-size` for smoke runs. No args = heavy Kaggle defaults (5 iters, 50 eval / 100 self-play games, search 10, batch 128).
+
+**Opponents:** self-play also faces the rule-based Mega-Lucario agent (importable port: `rulebased_lucario.py`) for a fraction of games set by `--rb-frac` (default 0.5; the learner plays `sample_deck`, the opponent plays the Lucario `deck.csv`). Continue an existing checkpoint with `--load out/<ckpt>.pth`, name checkpoints with `--out-prefix`, and the fully-trained model is saved to `out/<prefix>_final.pth` (the per-iteration `out/<prefix>N.pth` are saved *before* each iteration's training). Example "train further" run:
+```bash
+python starter_rl_kaggle.py --load out/model1.pth --out-prefix mixed \
+    --iterations 3 --eval-games 6 --selfplay-games 20 --search-count 8 --batch-size 32
+```
 
 ## 2. Episode replays / ladder data (available, not yet wired up)
 
@@ -151,3 +157,8 @@ Already fetched locally (all under gitignored `data/`): a sample replay `data/re
 
 # Environment
 Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token.
+
+# How to Submit to this Competition (only do this when explicitly asked)
+Submissions need to be a .tar.gz bundle with main.py at the top level directory (not nested) and include a deck.csv. To create a submission, create the .tar.gz with tar -czvf submission.tar.gz *. Upload this under the My Submissions tab and you should be good to go! Your submission will start with a scheduled game vs itself to ensure everything is working before being entered into the matchmaking pool against the rest of the leaderboard.
+Code and configuration for The TCG AI Battle Challenge as of kaggle-environments 1.14.10. See the latest at https://github.com/Kaggle/kaggle-environments. 
+CLI command to submit notebook: kaggle competitions submit -c pokemon-tcg-ai-battle -f submission.py -k nivald0/<NOTEBOOK> -v <VERSION> -m "Message"

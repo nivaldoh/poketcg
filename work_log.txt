@@ -23,3 +23,20 @@ Work log (lean — what's been tried/done).
   pipeline + commands).
 
 Open decision: build replay -> BC/IL parser next, or push further on self-play.
+
+2026-06-23 (cont.)
+- Ported the rule-based Mega-Lucario agent to an importable module
+  rulebased_lucario.py (stripped %%writefile + tarfile glue, added CG_LIB_PATH
+  bootstrap; exposes agent + my_deck). Smoke-checked: beats random 3-0.
+- starter_rl_kaggle.py: self-play now mixes opponents — RL self-play AND the
+  rule-based agent (--rb-frac, default 0.5; learner=sample_deck, opp=Lucario
+  deck.csv). Added eval vs rule-based (alongside random), --load (continue from a
+  checkpoint), --out-prefix, and a final-model save to out/<prefix>_final.pth
+  (the per-iteration <prefix>N.pth are saved BEFORE each iter's training, so the
+  last iter's updates were previously lost).
+- Trained the starter model further: seeded from out/model1.pth, 3 iters, 20
+  selfplay + 6 eval games, search 8, batch 32 (~few min). mean_loss converged
+  0.1024 -> 0.0340 -> 0.0357. Win-rate vs rule-based (6 games, noisy, sample_deck
+  vs Lucario) ~16-33%; vs random 83/50/100%. Final model out/mixed_final.pth
+  saved (distinct hash from seed and from mixed2.pth). Originals model0/1.pth
+  untouched; run_battle.py green.
