@@ -23,14 +23,24 @@ python run_battle.py [--games N]
 # RL+MCTS training. No args = original (heavy) Kaggle config; small numbers = fast
 # smoke pass. Writes checkpoints to out/modelN.pth.
 python starter_rl_kaggle.py --iterations 1 --eval-games 2 --selfplay-games 2 --search-count 2
+
+# Stage-1 eval harness (our PRIMARY model-performance signal): head-to-head win
+# rates with 95% Wilson CIs + a rough Elo. Default = a sanity battery of
+# random / rule-based / checkpoint matchups (seat-swapped).
+python eval.py --games 30 --search-count 6
 ```
 
-No test framework yet; `run_battle.py` is the smallest verifiable signal the engine runs. `vendor/`, `deck.csv`, and `out/` are gitignored.
+No test framework yet; `run_battle.py` is the smallest verifiable signal the engine runs, and `eval.py` is the primary way to compare agents/checkpoints. `vendor/`, `deck.csv`, and `out/` are gitignored.
+
+## Modules
+
+- `tcg_model.py` — the **reusable model/agent layer**, extracted from the trainer so tools can import it without launching training: `MyModel` (Transformer: encoder = value, decoder = policy), the sparse encoder/decoder feature builders, `mcts_agent`, `random_agent`, and `sample_deck`. Importing it only loads card metadata (no side effects).
+- `eval.py` — standalone **Stage-1 eval harness** built on `tcg_model` + `rulebased_lucario` (see README "Eval harness").
 
 ## The two starter files
 
 Both are **Kaggle-notebook exports, not plain modules**:
-- `starter_rl_kaggle.py` — RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path).
+- `starter_rl_kaggle.py` — RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports.
 - `starter_rulebased_lucario_kaggle.py` — heuristic agent for a Mega Lucario ex deck. **Still in Kaggle form, not yet ported**: starts with `%%writefile main.py`, ends by building `submission.tar.gz`; the reusable part is `agent()` and its scoring heuristics.
 
 Kaggle-specific glue to strip when porting: the `glob('/kaggle/input/...')` path injection, `%%writefile`, the `/kaggle_simulations/agent/` deck-path fallback, and `tarfile` packaging.

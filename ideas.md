@@ -12,3 +12,4 @@ Here are just some personal notes I'm scribbling. For now you can ignore this.
 - procedural gen tasks, agents, decks
 - find a way to come up with a training set containing key plays (like puzzles), or at least have some way to ensure that the model has seen the main strategy of all major metagame decks
 - show metamon repo and ask claude code to reuse ideas from there
+- experiment with data generation

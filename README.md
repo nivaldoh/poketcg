@@ -111,6 +111,27 @@ Description of the move effect or additional rule text.
 # Benchmark, verifiable results, evals, tests
 - We need to make our work have verifiable results as much as possible, to ensure we're actually making progress as we iterate. Some things will be hard to verify, so we'll have to start small and gradually think more about this as we go. For instance, checking whether a battle resulted in a win or loss should be trivial, but benchmarking intermediate factors to see what led to that result will be more challenging.
 
+## Eval harness (`eval.py`) — our primary model-performance signal
+
+`eval_info.md` lays out a staged methodology for benchmarking decision quality under sparse, binary (win/loss) rewards. We implement its **Stage 1** ("cheap, do-first"): head-to-head **win rate vs fixed baselines, with confidence intervals and seat-swapping, plus a rough Elo over the pool**. This is the directly-checkable signal for "did the model get better?".
+
+```bash
+python eval.py                       # default sanity battery
+python eval.py --games 50            # more games per model matchup (tighter CIs)
+python eval.py --search-count 8      # deeper MCTS for the model (stronger, slower)
+```
+
+What it does (`eval.py`, built on `tcg_model.py` + `rulebased_lucario.py`):
+- **Agents:** `random`, `rulebased` (Mega-Lucario, plays `deck.csv`), and any checkpoint (`MyModel` + `mcts_agent`, plays `sample_deck`). Defaults compare `out/mixed_final.pth` vs `out/model0.pth`.
+- **`play_match`** alternates seats every game (cancels first-player advantage) and routes each decision by `obs.current.yourIndex`.
+- **Reports** W/L/D, win% over *decisive* games with a **95% Wilson CI**, and a mean-anchored Bradley-Terry **Elo**. Cheap model-free matchups run with `--baseline-games` (default 200) for tight CIs; model matchups use `--games`.
+
+Key caveats (printed by the tool; from `eval_info.md`):
+- **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.
+- **High outcome variance** → wide CIs at small n; raise `--games`. Win% excludes draws (reported separately).
+
+**Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
+
 # Training
 
 Two sources of training data. Only self-play is wired up today.
