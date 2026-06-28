@@ -26,7 +26,7 @@ ground truth where any prose disagrees.
   `[minCount, maxCount]`, with **no duplicate indices**.
 - **First call returns a 60-card legal deck** (Kaggle flow only): when `obs.select is None`, return
   a deck, not option indices. Deck legality (60 / ≤4 per non-Basic-Energy / ≥1 Basic / ≤1 ACE SPEC)
-  belongs to `tcg-rules-critic` + `rulebook.md` and is asserted by `kaggle-submission`'s packer —
+  belongs to `tcg-rules-critic` + `docs/rulebook.md` and is asserted by `kaggle-submission`'s packer —
   don't re-derive it here.
 - **Opponent zones are counts-only, not visible cards.** Don't read hidden opponent cards from the
   observation; treat them as counts.
@@ -42,7 +42,7 @@ which asserts `result in (0, 1, 2)`). Run `python run_battle.py [--games N]` aft
 ## Single source of truth + known duplicates
 - Canonical contract prose: **`docs/cg-sdk.md`** (read from the vendored source; already referenced
   by `CLAUDE.md`). The deck-legality rule is paraphrased in `CLAUDE.md` and lives canonically in
-  `rulebook.md`/`tcg-rules-critic`. Point at those; don't add another copy here.
+  `docs/rulebook.md`/`tcg-rules-critic`. Point at those; don't add another copy here.
 
 ## Drift-resilience
 Point at `docs/cg-sdk.md`, don't restate it. Reference symbols by name + a grep recipe (never line
@@ -50,7 +50,7 @@ numbers). Discover paths at runtime (`CG_LIB_PATH`). The compiled `cg` engine an
 are ground truth over any doc; confirm a symbol/heading still exists before relying on it.
 
 ## Where this fits
-This is the **author/debug** step of the repo's verify-loop (`skills_and_hooks.md` → "How these
+This is the **author/debug** step of the repo's verify-loop (`docs/skills_and_hooks.md` → "How these
 compose"): **write the agent here** → run the `run_battle.py` smoke assertion → interpret any
 head-to-head numbers under `eval-discipline` → package with `kaggle-submission` only at the end.
 Use `tcg-rules-critic` wherever a step depends on the rules. Heed the "what does NOT help" guardrails

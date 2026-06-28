@@ -60,7 +60,7 @@ line numbers). Discover paths/defaults at runtime (`--help`, `CG_LIB_PATH`). Con
 flags still exist before submitting; the `cg` engine and `all_card_data()` are ground truth.
 
 ## Where this fits
-This is the **final** step of the repo's verify-loop (`skills_and_hooks.md` → "How these compose"):
+This is the **final** step of the repo's verify-loop (`docs/skills_and_hooks.md` → "How these compose"):
 author/debug an agent under `cg-agent-contract` → run the `run_battle.py` smoke assertion → read
 head-to-head numbers under `eval-discipline` → **package here, and submit only when explicitly
 asked**. Check game-rule assumptions with `tcg-rules-critic` if deck legality is ever in doubt.

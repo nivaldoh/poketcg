@@ -9,8 +9,8 @@ backlog; it's now the index). Skills live in `.claude/skills/<name>/SKILL.md`; t
 
 | Skill | Use when | Reuses / source of truth | Path |
 |---|---|---|---|
-| **`tcg-rules-critic`** | correctness depends on TCG rules — deck legality, evolution, energy/retreat, prize/KO, status, determinization, heuristic/feature/eval design | `rulebook.md`; `all_card_data()`; memory `poketcg-card-ids-and-decks` | `.claude/skills/tcg-rules-critic/` |
-| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_mymodel.py` win-rates | `eval_info.md`; memory `eval-training-not-helping-yet`, `eval-info-staged-methodology` | `.claude/skills/eval-discipline/` |
+| **`tcg-rules-critic`** | correctness depends on TCG rules — deck legality, evolution, energy/retreat, prize/KO, status, determinization, heuristic/feature/eval design | `docs/rulebook.md`; `all_card_data()`; memory `poketcg-card-ids-and-decks` | `.claude/skills/tcg-rules-critic/` |
+| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_mymodel.py` win-rates | `docs/eval_info.md`; memory `eval-training-not-helping-yet`, `eval-info-staged-methodology` | `.claude/skills/eval-discipline/` |
 | **`cg-agent-contract`** | authoring/debugging an `agent()`, a deck, or option-handling code | `docs/cg-sdk.md`; `run_battle.py`; `get_card()` in `tcg_model.py` | `.claude/skills/cg-agent-contract/` |
 | **`kaggle-submission`** | explicitly asked to package/submit a deployable agent (rare, high-stakes) | bundled `pack_submission.py` (executable layout SoT) | `.claude/skills/kaggle-submission/` |
 
@@ -26,7 +26,7 @@ backlog; it's now the index). Skills live in `.claude/skills/<name>/SKILL.md`; t
 ## The bar a skill must clear
 
 This repo already carries strong always-on context (`CLAUDE.md`, `README.md`, `docs/cg-sdk.md`,
-`eval_info.md`, auto-memory). A skill earns its place only by adding value *beyond* that:
+`docs/eval_info.md`, auto-memory). A skill earns its place only by adding value *beyond* that:
 (1) **forcing** an error-prone domain procedure at the right moment (sharp trigger),
 (2) **progressive disclosure** — pulling a large doc in only when relevant, or
 (3) **hiding a fiddly, infrequent procedure** behind a script + checklist. Skills *point to* existing

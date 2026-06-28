@@ -18,10 +18,15 @@ Intermediate Level
 This deck aims to load up your Pokémon with as much Energy as possible to unleash a powerful Voltaic Chain.
 """
 
-# Load deck.csv in the dataset
+# Resolve this agent's deck: prefer the repo's committed list, then the
+# Kaggle-packaged deck.csv (beside main.py) at submission time.
+_here = os.path.dirname(os.path.abspath(__file__))
 file_path = "deck.csv"
-if not os.path.exists(file_path):
-    file_path = "/kaggle_simulations/agent/" + file_path
+for _cand in (os.path.join(_here, "decks", "iono.csv"), "deck.csv",
+              "/kaggle_simulations/agent/deck.csv"):
+    if os.path.exists(_cand):
+        file_path = _cand
+        break
 with open(file_path, "r") as file:
     csv = file.read().split("\n")
 my_deck = []

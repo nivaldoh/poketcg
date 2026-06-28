@@ -49,7 +49,7 @@ Read each harness's current flags/defaults at use time: `python eval.py --help` 
   separate on outcomes at any feasible `n` — use `eval_agreement.py` (held-out move-agreement) there.
 - **Value/WPA metrics need a calibrated value model first.** Validate the value model's *calibration*
   before trusting any value-based or win-probability-added metric (this gates the deferred Stage-2
-  work — see `eval_info.md`).
+  work — see `docs/eval_info.md`).
 
 ## Don't re-run ruled-out experiments
 Before concluding "training will fix it", recall the guardrails: untrained `model0` has been the
@@ -58,19 +58,19 @@ diverges and the value head is miscalibrated on the ~50/50 mirror; the AMAGO/Met
 abandoned (memory `tcgmon-port-plan`). MCTS, not training, has been providing the strength.
 
 ## Single source of truth + known duplicates
-- Methodology canon: **`eval_info.md`** (process vs outcome metrics; staged plan; calibration gate) —
+- Methodology canon: **`docs/eval_info.md`** (process vs outcome metrics; staged plan; calibration gate) —
   inherit its framing, don't restate it. Volatile specifics live in memory
   (`eval-training-not-helping-yet`, `eval-info-staged-methodology`) — look them up, don't copy here.
 - Comparison method (frozen gauntlet / SPRT / move-agreement; why CRN is impossible): **`EVAL.md` §5**
   — point at it, don't restate.
 
 ## Drift-resilience
-Point at `eval_info.md` and memory; don't restate numbers. Read defaults from `--help`. Reference
+Point at `docs/eval_info.md` and memory; don't restate numbers. Read defaults from `--help`. Reference
 checkpoints by discovery (`ls out/`), never a hardcoded `out/*.pth`. Confirm a flag/file still exists
 before relying on it.
 
 ## Where this fits
-This is the **interpret-the-numbers** step of the repo's verify-loop (`skills_and_hooks.md` → "How
+This is the **interpret-the-numbers** step of the repo's verify-loop (`docs/skills_and_hooks.md` → "How
 these compose"): author/debug an agent under `cg-agent-contract` → run the `run_battle.py` smoke
 assertion → **read head-to-head numbers here with discipline** → package with `kaggle-submission` only
 at the end. Use `tcg-rules-critic` wherever a step depends on the rules.

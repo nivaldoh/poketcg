@@ -37,13 +37,15 @@ No test framework yet; `run_battle.py` is the smallest verifiable signal the eng
 - `tcg_model.py` — the **reusable model/agent layer**, extracted from the trainer so tools can import it without launching training: `MyModel` (Transformer: encoder = value, decoder = policy), the sparse encoder/decoder feature builders, `mcts_agent`, `random_agent`, and `sample_deck`. Importing it only loads card metadata (no side effects).
 - `eval.py` — standalone **Stage-1 eval harness** built on `tcg_model` + `rulebased_lucario` (see README "Eval harness").
 
-## The two starter files
+## The starter files
 
-Both are **Kaggle-notebook exports, not plain modules**:
+These are **Kaggle-notebook exports, not plain modules** (they open with `%%writefile main.py` and end by building `submission.tar.gz`):
 - `starter_rl_kaggle.py` — RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports.
-- `starter_rulebased_lucario_kaggle.py` — heuristic agent for a Mega Lucario ex deck. **Still in Kaggle form, not yet ported**: starts with `%%writefile main.py`, ends by building `submission.tar.gz`; the reusable part is `agent()` and its scoring heuristics.
+- `starter_rulebased_<deck>_kaggle.py` — heuristic agents, one per deck: **lucario** (Mega Lucario ex), **abomasnow** (Mega Abomasnow ex), **dragapult_ex**, **iono** (Iono's Bellibolt/Voltorb). The reusable part of each is `agent()` and its scoring heuristics. Only Lucario is also ported to an importable module (`rulebased_lucario.py` — the teacher used by BC/eval); the other three are still Kaggle-form.
 
-Kaggle-specific glue to strip when porting: the `glob('/kaggle/input/...')` path injection, `%%writefile`, the `/kaggle_simulations/agent/` deck-path fallback, and `tarfile` packaging.
+Each rule-based agent loads its own 60-card deck from `decks/<name>.csv` (committed; generated from the agent's decklist constants), falling back to `deck.csv` then the Kaggle `/kaggle_simulations/agent/deck.csv` at submission time. Root `deck.csv` (gitignored, = the Lucario list, mirrors `decks/lucario.csv`) stays the learner-side default for the training/eval scripts.
+
+Kaggle-specific glue to strip when porting one of the rule-based starters: the `glob('/kaggle/input/...')` path injection, `%%writefile`, and `tarfile` packaging.
 
 ## Architecture & API
 
@@ -55,4 +57,4 @@ Full reference — observation/option/card model, driver loop, Search API & MCTS
 
 - New execution/training code should ship the smallest possible verification (e.g. a short battle asserting a `result`), per the README's "verifiable results" goal.
 - Keep the Kaggle submission boundary clean: a deployable agent is ultimately `main.py` (`agent(obs_dict)`) + the `cg` package + `deck.csv`, packaged as `submission.tar.gz`. Don't entangle local training-harness code with it.
-- Write against drift: in docs, skills, and memory, reference symbols by name + a grep recipe (never pinned line numbers) and discover paths/defaults at runtime (never hardcode `out/*.pth`, `deck.csv`, or flag defaults). Verify a file/symbol/flag still exists before recommending it; the `cg` engine and `all_card_data()` are ground truth over any doc where they conflict. (Fuller per-skill version: `skill_ideas.md` → "Drift-resilience contract".)
+- Write against drift: in docs, skills, and memory, reference symbols by name + a grep recipe (never pinned line numbers) and discover paths/defaults at runtime (never hardcode `out/*.pth`, `deck.csv`, or flag defaults). Verify a file/symbol/flag still exists before recommending it; the `cg` engine and `all_card_data()` are ground truth over any doc where they conflict. (Fuller per-skill version: `docs/skills_and_hooks.md` → "Drift-resilience contract".)

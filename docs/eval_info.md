@@ -1,5 +1,7 @@
 # Benchmarking the Quality of Intermediate Decisions in Win/Loss Card Games
 
+> Methodology canon. For our project's eval *strategy* (what's built, what to run, what to build next), start at [`EVAL.md`](../EVAL.md); this file is the *why* behind it.
+
 ## TL;DR
 - **Build a learned win-probability (value) model and score every move by how much it changes win probability (a "win-probability-added" metric); this is the single most practical, directly-transferable tool for ranking your models' intermediate decisions when only win/loss is known.** Pair it with curated puzzle/scenario suites (where you DO know the right answer) and head-to-head Elo from self-play.
 - Yes, conditional/puzzle-style task suites are a good idea — they are exactly how chess (Strategic Test Suite), Pokémon (PokéChamp's 1,000 curated 1v1 scenarios), and Hearthstone ("find lethal" puzzles) sidestep the missing-ground-truth problem. Use them as a complement, not a replacement, for value-based and play-based metrics.

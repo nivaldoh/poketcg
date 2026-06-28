@@ -4,8 +4,8 @@
 - We should aim to structure the repo such that it makes it easier for you (Claude Code) to work with it.
 - We should keep the work log lean and up-to-date so that we can properly keep track of what has been tried/done so far.
 
-# First goal
-- We're now able to run test battles with an untrained model. Our next step should be to understand what training data we have available and how to obtain it. Then we should update the Training section in this README accordingly. Once we have the info we need, we should do a small training run for the existing RL model and make sure that it's working properly.
+# Roadmap
+- The active roadmap is the RL-first ladder (R1–R6) in [`plan.md`](plan.md). For evaluation strategy see [`EVAL.md`](EVAL.md); for the underlying methodology see [`docs/eval_info.md`](docs/eval_info.md).
 
 # Context
 
@@ -106,14 +106,16 @@ Description of the move effect or additional rule text.
 - These will probably be important for some things. I haven't provided you an actual rule book yet, so for now just be careful with assumptions about the game.
 
 # Skills
-- Described in skills_and_hooks.md.
+- Described in docs/skills_and_hooks.md.
 
 # Benchmark, verifiable results, evals, tests
 - We need to make our work have verifiable results as much as possible, to ensure we're actually making progress as we iterate. Some things will be hard to verify, so we'll have to start small and gradually think more about this as we go. For instance, checking whether a battle resulted in a win or loss should be trivial, but benchmarking intermediate factors to see what led to that result will be more challenging.
 
 ## Eval harness (`eval.py`) — our primary model-performance signal
 
-`eval_info.md` lays out a staged methodology for benchmarking decision quality under sparse, binary (win/loss) rewards. We implement its **Stage 1** ("cheap, do-first"): head-to-head **win rate vs fixed baselines, with confidence intervals and seat-swapping, plus a rough Elo over the pool**. This is the directly-checkable signal for "did the model get better?".
+**Strategy & roadmap: see [`EVAL.md`](EVAL.md)** — the single entry point (what we measure, what's built, what to build next). This section is the quickstart.
+
+`docs/eval_info.md` lays out a staged methodology for benchmarking decision quality under sparse, binary (win/loss) rewards. We implement its **Stage 1** ("cheap, do-first"): head-to-head **win rate vs fixed baselines, with confidence intervals and seat-swapping, plus a rough Elo over the pool**. This is the directly-checkable signal for "did the model get better?".
 
 ```bash
 python eval.py                       # default sanity battery
@@ -126,11 +128,11 @@ What it does (`eval.py`, built on `tcg_model.py` + `rulebased_lucario.py`):
 - **`play_match`** alternates seats every game (cancels first-player advantage) and routes each decision by `obs.current.yourIndex`.
 - **Reports** W/L/D, win% over *decisive* games with a **95% Wilson CI**, and a mean-anchored Bradley-Terry **Elo**. Cheap model-free matchups run with `--baseline-games` (default 200) for tight CIs; model matchups use `--games`.
 
-Key caveats (printed by the tool; from `eval_info.md`):
+Key caveats (printed by the tool; from `docs/eval_info.md`):
 - **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.
 - **High outcome variance** → wide CIs at small n; raise `--games`. Win% excludes draws (reported separately).
 
-**Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
+**Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `docs/eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `docs/eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
 
 # Training
 
@@ -177,7 +179,7 @@ Already fetched locally (all under gitignored `data/`): a sample replay `data/re
 **Open decision:** build the replay → BC/IL parser next, or push further on self-play first.
 
 # Environment
-Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token.
+Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token. The local env is very limited in terms of resources, so we won't be able to run large experiments locally. We should see if we're able to use the Kaggle CLI for this.
 
 # How to Submit to this Competition (only do this when explicitly asked)
 See kaggle-submission skill.

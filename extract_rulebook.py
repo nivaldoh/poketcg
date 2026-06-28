@@ -1,4 +1,4 @@
-"""Extract the text of rulebook.pdf into rulebook.md.
+"""Extract the text of rulebook.pdf into docs/rulebook.md.
 
 The PDF has a real text layer (not a scan), so we just pull text in reading
 order and drop images/vector art entirely. A light heading heuristic promotes
@@ -117,7 +117,7 @@ def collapse_blanks(lines: list[str]) -> list[str]:
 
 def main() -> None:
     src = sys.argv[1] if len(sys.argv) > 1 else "rulebook.pdf"
-    dst = sys.argv[2] if len(sys.argv) > 2 else "rulebook.md"
+    dst = sys.argv[2] if len(sys.argv) > 2 else "docs/rulebook.md"
 
     doc = fitz.open(src)
     body = body_font_size(doc)
