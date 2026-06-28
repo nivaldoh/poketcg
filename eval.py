@@ -36,6 +36,13 @@ import tcg_model
 from tcg_model import MyModel, mcts_agent, random_agent, sample_deck
 from cg.game import battle_start, battle_select, battle_finish
 import rulebased_lucario
+# The 3 newer rule-based decks are still Kaggle-form exports (%%writefile/tarfile commented out),
+# importable as plain modules now that `cg` is on sys.path. They expose `agent` + `my_deck` like
+# rulebased_lucario, and reset their per-game state on the first call (see each file's obs.select-None
+# / turn-0 handling) so reuse across the gauntlet's many games is clean.
+import starter_rulebased_abomasnow_kaggle as rb_abomasnow
+import starter_rulebased_dragapult_ex_kaggle as rb_dragapult
+import starter_rulebased_iono_kaggle as rb_iono
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,6 +70,19 @@ def make_random() -> Agent:
 def make_rulebased() -> Agent:
     # The heuristics are hardcoded for the Lucario deck, so it must play that deck.
     return Agent("rulebased", rulebased_lucario.agent, rulebased_lucario.my_deck)
+
+
+# The newer rule-based archetypes, each hardcoded to (and playing) its own deck.
+def make_abomasnow() -> Agent:
+    return Agent("abomasnow", rb_abomasnow.agent, rb_abomasnow.my_deck)
+
+
+def make_dragapult() -> Agent:
+    return Agent("dragapult_ex", rb_dragapult.agent, rb_dragapult.my_deck)
+
+
+def make_iono() -> Agent:
+    return Agent("iono", rb_iono.agent, rb_iono.my_deck)
 
 
 def make_model(path: str) -> Agent:
@@ -312,7 +332,10 @@ def run_manifest(mode: str, args, ckpt_paths: list, extra: dict = None) -> dict:
         "checkpoints": [{"path": p, "sha256": sha256(p)}
                         for p in dict.fromkeys(ckpt_paths) if p and os.path.exists(p)],
         "decks": {"sample_deck": deck_hash(sample_deck),
-                  "lucario": deck_hash(rulebased_lucario.my_deck)},
+                  "lucario": deck_hash(rulebased_lucario.my_deck),
+                  "abomasnow": deck_hash(rb_abomasnow.my_deck),
+                  "dragapult_ex": deck_hash(rb_dragapult.my_deck),
+                  "iono": deck_hash(rb_iono.my_deck)},
     }
     if extra:
         man.update(extra)
@@ -338,7 +361,12 @@ def run_gauntlet(args) -> int:
     pool = [
         (make_random(), "floor", "mirror sample_deck — sanity FLOOR (saturates; everyone beats random)"),
         (make_model(args.anchor), "skill", "mirror sample_deck vs FROZEN anchor — the discriminating SKILL axis"),
-        (make_rulebased(), "confound", "vs teacher (Lucario) — large-effect YARDSTICK, DECK-CONFOUNDED"),
+        # Deck-confounded archetype field: how the checkpoint fares across a diverse metagame, not just
+        # the Lucario teacher. Each plays its own deck, so these mix skill with the deck matchup.
+        (make_rulebased(), "confound", "vs teacher (Lucario) — DECK-CONFOUNDED yardstick"),
+        (make_abomasnow(), "confound", "vs Abomasnow ex — DECK-CONFOUNDED archetype"),
+        (make_dragapult(), "confound", "vs Dragapult ex — DECK-CONFOUNDED archetype"),
+        (make_iono(), "confound", "vs Iono — DECK-CONFOUNDED archetype"),
     ]
     print(f"\n{'=' * 78}\nGauntlet | {os.path.basename(args.checkpoint)} | {n} games/opponent "
           f"(seat-swapped) | search-count={args.search_count}\n{'=' * 78}")
@@ -350,7 +378,7 @@ def run_gauntlet(args) -> int:
               f"n={r['decisive']} dec, {r['d']} draws)")
     skill = next(r for r in rows if r["kind"] == "skill")
     floor = next(r for r in rows if r["kind"] == "floor")
-    conf = next(r for r in rows if r["kind"] == "confound")
+    field = [r for r in rows if r["kind"] == "confound"]
     e = skill["elo"]
     e_str = "+inf" if e == float("inf") else ("-inf" if e == float("-inf") else f"{e:+.0f}")
     print("\n" + "-" * 78)
@@ -358,9 +386,12 @@ def run_gauntlet(args) -> int:
     print(f"  SKILL axis : win% vs frozen anchor = {100 * skill['p']:5.1f}%  "
           f"(95% CI {100 * skill['lo']:.1f}-{100 * skill['hi']:.1f})  => {e_str} Elo vs anchor")
     print(f"  FLOOR      : win% vs random        = {100 * floor['p']:5.1f}%  (expect high; saturated)")
-    print(f"  YARDSTICK  : win% vs teacher        = {100 * conf['p']:5.1f}%  (DECK-CONFOUNDED, not pure skill)")
-    print(f"  mean (unconfounded floor+skill)    = {100 * (skill['p'] + floor['p']) / 2:5.1f}%  "
-          f"(vs-random saturates, so SKILL is the discriminating number)")
+    print("  FIELD      : win% vs each rule-based archetype (DECK-CONFOUNDED — mixes skill + matchup):")
+    for r in field:
+        print(f"               {r['opp']:14s} = {100 * r['p']:5.1f}%  "
+              f"(95% CI {100 * r['lo']:.1f}-{100 * r['hi']:.1f}, n={r['decisive']} dec)")
+    if field:
+        print(f"               {'field mean':14s} = {100 * sum(r['p'] for r in field) / len(field):5.1f}%")
     print("\nProgression/regression = change in the SKILL-axis win% (or Elo) vs this same frozen")
     print("anchor across runs. For a controlled ship/no-ship verdict use --mode sprt. Near-identical")
     print("checkpoints won't separate here (mirror ~50/50) — use eval_agreement.py for those.")

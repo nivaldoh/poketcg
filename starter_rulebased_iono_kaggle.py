@@ -94,6 +94,9 @@ def agent(obs_dict: dict) -> list[int]:
         # In the initial selection, the obs.select is None, and it is necessary to return the deck.
         # The deck is a list of 60 card IDs.
         # The deck must comply with the Pokémon Trading Card Game rules.
+        # Reset per-game state: this module is imported once and reused across many games (eval gauntlet).
+        global can_attack
+        can_attack = False
         return my_deck
     
     state = obs.current
@@ -192,7 +195,6 @@ def agent(obs_dict: dict) -> list[int]:
     for c in my_state.discard:
         discard_counts[c.id] += 1
 
-    global can_attack
     if context == SelectContext.MAIN:
         can_attack = False
         for o in select.option:

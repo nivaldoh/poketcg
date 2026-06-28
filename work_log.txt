@@ -123,3 +123,20 @@ Open decision: build replay -> BC/IL parser next, or push further on self-play.
   pack_submission.py.
 - Verified: per-agent deck resolution (all 4 starters + rulebased_lucario load their own 60-card deck);
   run_battle.py green; no stale doc refs outside docs/.
+
+2026-06-28 (cont.) — added the 3 new rule-based decks as gauntlet opponents.
+- eval.py --mode gauntlet now plays a deck-confounded ARCHETYPE FIELD (Lucario teacher + Abomasnow ex
+  + Dragapult ex + Iono), not just the Lucario yardstick. Imported the 3 Kaggle-form starters directly
+  (they're importable now — %%writefile/tarfile commented — and tcg_model puts cg on sys.path first);
+  added make_abomasnow/make_dragapult/make_iono (mirroring make_rulebased), appended them to the pool
+  as kind "confound", generalized the headline to a FIELD block (win%/CI per archetype + field mean,
+  SKILL-axis + FLOOR unchanged), and recorded the 3 deck hashes in run_manifest. No new CLI flags
+  (--gauntlet-games already scales the whole pool); no wrapper modules.
+- Fixed a multi-game state leak (opponents are imported once, reused ~200 games): iono reset can_attack
+  on the obs.select-None first call; dragapult reset its MAIN-only can_* flags + plans (in-place) in the
+  existing turn-0 block. abomasnow is stateless. (sample_deck is a Kyogre/Abomasnow *family* build but
+  NOT identical to decks/abomasnow.csv, so all 3 are deck-confounded, not a clean mirror.)
+- Verified: 3 opponents import + expose agent/my_deck; each plays its own deck vs random over 6 reused
+  seat-swapped games (all terminal, decks accepted, no leak/crash); end-to-end `eval.py --mode gauntlet
+  --gauntlet-games 2 --search-count 2` plays all 6 opponents, prints the FIELD block, and the manifest
+  carries all 5 deck hashes; run_battle.py green.

@@ -342,6 +342,9 @@ def agent(obs_dict: dict) -> list[int]:
 
     global pre_turn_log
     global current_turn_log
+    # This module is imported once and reused across many games (eval gauntlet); these MAIN-only
+    # flags would otherwise leak into a new game's setup decisions, so reset them per-game at turn 0.
+    global can_switch, can_attack, can_main_attack, can_energy_attach
 
     state = obs.current
     select = obs.select
@@ -354,6 +357,10 @@ def agent(obs_dict: dict) -> list[int]:
         prize.clear()
         pre_turn_log.clear()
         current_turn_log.clear()
+        can_switch = can_attack = can_main_attack = can_energy_attach = False
+        plan_a.attack = plan_b.attack = 0   # reset plans in-place (no rebind -> no global needed)
+        plan_a.counter = []
+        plan_b.counter = []
     else:
         for log in obs.logs:
             current_turn_log.append(log)
