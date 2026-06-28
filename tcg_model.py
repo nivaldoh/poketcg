@@ -401,11 +401,32 @@ class Node:
         if self.parent != None:
             self.parent.backprop(value)
 
+def _rollout_value(search_state: SearchState, your_index: int, max_depth: int = 20) -> float:
+    """Depth-capped random playout from `search_state`; prize-diff leaf, from `your_index`'s view.
+    Steps the searchId forward (spawning sibling searchIds) WITHOUT invalidating it, so the node can
+    still be expanded afterwards. Used as the MCTS leaf value when `value_mode="rollout"` (a robust
+    alternative to a value head that the mirror-BC can't calibrate)."""
+    ss = search_state
+    for _ in range(max_depth):
+        cur = ss.observation.current
+        if cur.result >= 0:
+            return 0.0 if cur.result == 2 else (1.0 if cur.result == your_index else -1.0)
+        sel = ss.observation.select
+        ss = search_step(ss.searchId, random.sample(range(len(sel.option)), sel.maxCount))
+    cur = ss.observation.current
+    if cur.result >= 0:
+        return 0.0 if cur.result == 2 else (1.0 if cur.result == your_index else -1.0)
+    our = len(cur.players[your_index].prize)
+    opp = len(cur.players[1 - your_index].prize)
+    return (opp - our) / 6.0
+
+
 def create_node(parent: Node | None,
                 search_state: SearchState,
                 your_index: int,
                 your_deck: list[int],
-                model: MyModel
+                model: MyModel,
+                value_mode: str = "net"
     ) -> tuple[Node, LearnSample | None]:
     node = Node(parent, search_state)
 
@@ -438,10 +459,11 @@ def create_node(parent: Node | None,
             
         sv_enc = get_encoder_input(obs, your_deck)
         sv_dec = get_decoder_input(obs, actions)
-        value, policy = eval_nn(sv_enc, sv_dec, model)
-        v = value
-        if state.yourIndex != your_index:
-            v = -v
+        value, policy = eval_nn(sv_enc, sv_dec, model)   # policy = MCTS prior (always from the net)
+        if value_mode == "rollout":
+            v = _rollout_value(search_state, your_index)  # already your_index-perspective
+        else:
+            v = value if state.yourIndex == your_index else -value
         node.value = v
         node.backprop(v)
 
@@ -457,7 +479,8 @@ def create_node(parent: Node | None,
     return (node, sample)
 
 # We will perform exploration using MCTS and select actions. At the same time, we will also generate training data.
-def mcts_agent(obs_dict: dict, your_deck: list[int], model: MyModel) -> tuple[list[int], LearnSample]:
+def mcts_agent(obs_dict: dict, your_deck: list[int], model: MyModel,
+               value_mode: str = "net") -> tuple[list[int], LearnSample]:
     obs = to_observation_class(obs_dict)
     your_index = obs.current.yourIndex
     state = obs.current
@@ -466,11 +489,14 @@ def mcts_agent(obs_dict: dict, your_deck: list[int], model: MyModel) -> tuple[li
         obs,
         your_deck=random.sample(your_deck, state.players[your_index].deckCount), # Randomly select from deck.
         your_prize=random.sample(your_deck, len(state.players[your_index].prize)), # Randomly select from deck.
-        opponent_deck=[1072] * state.players[1 - your_index].deckCount, # Fill with Snorlax (There is no deep meaning).
-        opponent_prize=[1] * len(state.players[1 - your_index].prize), # Fill with Basic Energy (There is no deep meaning)
-        opponent_hand=[1] * state.players[1 - your_index].handCount, # Fill with Basic Energy.
-        opponent_active=[1072] if len(active) > 0 and active[0] == None else []) # Fill with Snorlax.
-    root, sample = create_node(None, search_state, your_index, your_deck, model) # Create root node.
+        # Mirror determinization: model the hidden opponent as piloting the SAME deck
+        # (correct for a mirror match). The old Snorlax/energy fill made the search badly
+        # misjudge a Lucario opponent.
+        opponent_deck=random.sample(your_deck, state.players[1 - your_index].deckCount),
+        opponent_prize=[1] * len(state.players[1 - your_index].prize), # Prizes hidden -> energy placeholder.
+        opponent_hand=random.sample(your_deck, state.players[1 - your_index].handCount),
+        opponent_active=[677] if len(active) > 0 and active[0] == None else []) # 677 = Riolu (a basic in the Lucario deck).
+    root, sample = create_node(None, search_state, your_index, your_deck, model, value_mode) # root node
 
     # Search
     for _ in range(SEARCH_COUNT):
@@ -494,7 +520,7 @@ def mcts_agent(obs_dict: dict, your_deck: list[int], model: MyModel) -> tuple[li
             
             if next.node == None:
                 search_state = search_step(current.state.searchId, next.select)
-                next.node, _ = create_node(current, search_state, your_index, your_deck, model)
+                next.node, _ = create_node(current, search_state, your_index, your_deck, model, value_mode)
                 break
             else:
                 current = next.node

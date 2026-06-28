@@ -49,8 +49,18 @@ _p.add_argument("--batch-size", type=int, default=128)
 _p.add_argument("--load", type=str, default=None, help="checkpoint to continue training from")
 _p.add_argument("--out-prefix", type=str, default="model", help="checkpoint filename prefix under out/")
 _p.add_argument("--rb-frac", type=float, default=0.5, help="fraction of self-play games played vs the rule-based agent")
+_p.add_argument("--deck", type=str, default=None,
+                help="path to a 60-card deck CSV for the LEARNER to pilot (default: sample_deck). "
+                     "Set to deck.csv to train/eval the MCTS agent AS the Lucario pilot.")
 _args = _p.parse_args()
 tcg_model.SEARCH_COUNT = _args.search_count
+
+# The deck the MCTS learner pilots. Default keeps the original sample_deck behavior;
+# `--deck deck.csv` makes the learner play Lucario (a true mirror vs the rule-based teacher).
+learner_deck = sample_deck
+if _args.deck:
+    learner_deck = [int(x) for x in open(_args.deck).read().split()]
+    print(f"Learner deck loaded from {_args.deck} ({len(learner_deck)} cards)", flush=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = MyModel(128, 2, 256, 1, 1)
@@ -64,25 +74,25 @@ loss_fn_dec = torch.nn.HuberLoss(reduction="none", delta=0.1)  # Decoder loss fu
 os.makedirs("out", exist_ok=True)
 
 def eval_winrate(n_games: int, opponent: str) -> tuple[int, list[int]]:
-    """Win rate (%) of the MCTS agent (sample_deck) vs an opponent over n_games.
+    """Win rate (%) of the MCTS agent (learner_deck) vs an opponent over n_games.
 
-    opponent: "random" (mirror sample_deck) or "rulebased" (Lucario deck).
+    opponent: "random" (mirror learner_deck) or "rulebased" (Lucario deck).
     Returns (win_rate, [wins, losses, draws]).
     """
     results = [0, 0, 0]
     for i in progress(n_games, f"Evaluating vs {opponent}... "):
         your_index = i % 2
         if opponent == "rulebased":
-            decks = [sample_deck, sample_deck]
+            decks = [learner_deck, learner_deck]
             decks[1 - your_index] = lucario_deck  # opponent plays Lucario
             obs, start_data = battle_start(decks[0], decks[1])
         else:
-            obs, start_data = battle_start(sample_deck, sample_deck)
+            obs, start_data = battle_start(learner_deck, learner_deck)
         if start_data.errorPlayer >= 0:
             raise ValueError(f"Deck rejected: errorType={start_data.errorType}")
         while obs["current"]["result"] < 0:
             if obs["current"]["yourIndex"] == your_index:
-                selected, _ = mcts_agent(obs, sample_deck, model)
+                selected, _ = mcts_agent(obs, learner_deck, model)
             elif opponent == "rulebased":
                 selected = rulebased_agent(obs)
             else:
@@ -120,11 +130,11 @@ for counter in range(_args.iterations):
             vs_rb = int((g + 1) * _args.rb_frac) > int(g * _args.rb_frac)
             learner = g % 2  # alternate which player index the RL learner is
             if vs_rb:
-                decks = [sample_deck, sample_deck]
+                decks = [learner_deck, learner_deck]
                 decks[1 - learner] = lucario_deck  # opponent plays Lucario
                 obs, _ = battle_start(decks[0], decks[1])
             else:
-                obs, _ = battle_start(sample_deck, sample_deck)
+                obs, _ = battle_start(learner_deck, learner_deck)
             samples:list[list[LearnSample]] = [[], []]  # [Player0 samples, Player1 samples]
             while True:
                 if obs["current"]["result"] >= 0:
@@ -135,7 +145,7 @@ for counter in range(_args.iterations):
                     selected = rulebased_agent(obs)  # opponent move; no sample collected
                 else:
                     # The MCTS agent generates an action and a training sample.
-                    selected, sample = mcts_agent(obs, sample_deck, model)
+                    selected, sample = mcts_agent(obs, learner_deck, model)
                     samples[yi].append(sample)
                 obs = battle_select(selected)
 

@@ -100,13 +100,13 @@ Effect Explanation
 Description of the move effect or additional rule text.
 
 ## API documentation (to interact with the game simulator)
-- https://matsuoinstitute.github.io/cabt/
+- https://matsuoinstitute.github.io/cabt/ (TODO: add tooling for this in the future?)
 
 ## Pokémon TCG rules and specifics
 - These will probably be important for some things. I haven't provided you an actual rule book yet, so for now just be careful with assumptions about the game.
 
 # Skills
-- We need to think about what repeatable processes exist and what domain-specific things could use specific Skills. We don't need to create them yet, but we think about Skills that might be useful to create later on.
+- Described in skills_and_hooks.md.
 
 # Benchmark, verifiable results, evals, tests
 - We need to make our work have verifiable results as much as possible, to ensure we're actually making progress as we iterate. Some things will be hard to verify, so we'll have to start small and gradually think more about this as we go. For instance, checking whether a battle resulted in a win or loss should be trivial, but benchmarking intermediate factors to see what led to that result will be more challenging.
@@ -180,6 +180,4 @@ Already fetched locally (all under gitignored `data/`): a sample replay `data/re
 Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token.
 
 # How to Submit to this Competition (only do this when explicitly asked)
-Submissions need to be a .tar.gz bundle with main.py at the top level directory (not nested) and include a deck.csv. To create a submission, create the .tar.gz with tar -czvf submission.tar.gz *. Upload this under the My Submissions tab and you should be good to go! Your submission will start with a scheduled game vs itself to ensure everything is working before being entered into the matchmaking pool against the rest of the leaderboard.
-Code and configuration for The TCG AI Battle Challenge as of kaggle-environments 1.14.10. See the latest at https://github.com/Kaggle/kaggle-environments. 
-CLI command to submit notebook: kaggle competitions submit -c pokemon-tcg-ai-battle -f submission.py -k nivald0/<NOTEBOOK> -v <VERSION> -m "Message"
+See kaggle-submission skill.

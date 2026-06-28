@@ -159,6 +159,9 @@ def main() -> int:
                     help="trained model to evaluate")
     ap.add_argument("--baseline-checkpoint", default=os.path.join(HERE, "out", "model0.pth"),
                     help="earlier checkpoint, for a progress comparison (model vs baseline)")
+    ap.add_argument("--checkpoints", default=None,
+                    help="comma-separated checkpoints -> round-robin (random + each, all "
+                         "playing sample_deck = clean mirror skill ranking). Overrides the battery.")
     ap.add_argument("--search-count", type=int, default=4,
                     help="MCTS rollouts per move for model agents (higher = stronger, slower)")
     ap.add_argument("--seed", type=int, default=0)
@@ -168,29 +171,44 @@ def main() -> int:
     torch.manual_seed(args.seed)
     tcg_model.SEARCH_COUNT = args.search_count
 
-    # Build the agent pool. Model agents are skipped (with a note) if missing.
-    rnd, rb = make_random(), make_rulebased()
-    model = make_model(args.checkpoint) if os.path.exists(args.checkpoint) else None
-    base = (make_model(args.baseline_checkpoint)
-            if os.path.exists(args.baseline_checkpoint) else None)
-    if model and base and os.path.basename(args.checkpoint) == os.path.basename(args.baseline_checkpoint):
-        base = None  # same file -> skip the redundant self comparison
+    # Round-robin mode (--checkpoints): pool = random + the listed checkpoints, all
+    # playing sample_deck (pure mirror, NO deck confound) -> a clean skill ranking,
+    # e.g. to see whether training improved along a checkpoint sequence. Otherwise
+    # run the default sanity battery.
+    rr_paths = [p.strip() for p in (args.checkpoints or "").split(",") if p.strip()]
+    round_robin = bool(rr_paths)
+    if round_robin:
+        present = [p for p in rr_paths if os.path.exists(p)]
+        for p in rr_paths:
+            if p not in present:
+                print(f"NOTE: checkpoint {p} missing -> skipped.")
+        pool = [make_random()] + [make_model(p) for p in present]
+        matchups = [(pool[i], pool[j], "round-robin (mirror, sample_deck)")
+                    for i in range(len(pool)) for j in range(i + 1, len(pool))]
+    else:
+        # Build the agent pool. Model agents are skipped (with a note) if missing.
+        rnd, rb = make_random(), make_rulebased()
+        model = make_model(args.checkpoint) if os.path.exists(args.checkpoint) else None
+        base = (make_model(args.baseline_checkpoint)
+                if os.path.exists(args.baseline_checkpoint) else None)
+        if model and base and os.path.basename(args.checkpoint) == os.path.basename(args.baseline_checkpoint):
+            base = None  # same file -> skip the redundant self comparison
 
-    # The sanity battery. Each tuple is (agent_a, agent_b, note).
-    matchups = [
-        (rnd, rnd, "harness self-check: expect ~50% (validates seat-swap)"),
-        (rb, rnd, "validates agent ordering: expect rule-based clearly ahead"),
-    ]
-    if model:
-        matchups.append((model, rnd, "mirror (sample_deck both sides): isolates skill"))
-        matchups.append((model, rb, "progress signal; DECK-CONFOUNDED (sample vs Lucario)"))
-        if base:
-            matchups.append((model, base, "training progress (mirror): newer vs older ckpt"))
+        # The sanity battery. Each tuple is (agent_a, agent_b, note).
+        matchups = [
+            (rnd, rnd, "harness self-check: expect ~50% (validates seat-swap)"),
+            (rb, rnd, "validates agent ordering: expect rule-based clearly ahead"),
+        ]
+        if model:
+            matchups.append((model, rnd, "mirror (sample_deck both sides): isolates skill"))
+            matchups.append((model, rb, "progress signal; DECK-CONFOUNDED (sample vs Lucario)"))
+            if base:
+                matchups.append((model, base, "training progress (mirror): newer vs older ckpt"))
 
     print("=" * 78)
     print(f"Stage-1 eval | games/matchup={args.games} (seat-swapped) | "
           f"MCTS search-count={args.search_count} | seed={args.seed}")
-    if not os.path.exists(args.checkpoint):
+    if not round_robin and not os.path.exists(args.checkpoint):
         print(f"NOTE: checkpoint {args.checkpoint} missing -> model matchups skipped.")
     print("=" * 78)
 
@@ -221,7 +239,8 @@ def main() -> int:
     if len(pool_names) >= 3:
         elo = fit_elo(pool_names, elo_wins)
         print("\n" + "-" * 78)
-        print("Elo (Bradley-Terry, mean-anchored; ROUGH, deck-confounded — see caveats):")
+        confound = "clean mirror, sample_deck" if round_robin else "ROUGH, deck-confounded"
+        print(f"Elo (Bradley-Terry, mean-anchored; {confound} — see caveats):")
         for nm, e in sorted(elo.items(), key=lambda kv: -kv[1]):
             print(f"  {nm:28s} {e:+7.0f}")
 

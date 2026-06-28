@@ -40,3 +40,44 @@ Open decision: build replay -> BC/IL parser next, or push further on self-play.
   vs Lucario) ~16-33%; vs random 83/50/100%. Final model out/mixed_final.pth
   saved (distinct hash from seed and from mixed2.pth). Originals model0/1.pth
   untouched; run_battle.py green.
+
+2026-06-27 — explored porting Metamon/AMAGO (the tcgmon package) — ABANDONED; kept the simple starter.
+- Tried reproducing Metamon's IL-warmup->RL recipe on the AMAGO engine via a new tcgmon/ package
+  (BC-distill the rule-based Lucario teacher into a model-free pointer policy, then offline RL).
+  Outcome: BC distillation worked (~82% teacher-agreement, beats random ~70-75%, ~parity vs the
+  teacher) but NO offline-RL/self-improvement variant (binary/shaped/iterated/self-imitation/DAgger)
+  beat BC — the bottleneck is the noisy sparse reward + the teacher's lookahead (cg Search API), which
+  a feedforward policy can't represent. Search-at-inference (flat-MC, then a real PUCT tree) lifted it
+  to ~parity with the teacher (~48%) but not reliably past it. Reproduces eval-training-not-helping-yet.
+- The SIMPLE starter MATCHES the AMAGO port (so AMAGO/Metamon weren't worth the complexity): a
+  cross-entropy BC of the teacher into tcg_model.MyModel matches AMAGO's prior (greedy 40% vs teacher
+  at n=200, = AMAGO flat-MC) and rollout-MCTS @ search_count>=30 reaches ~45% (= AMAGO's 48% within
+  noise). AMAGO's recurrence buys nothing here.
+- DECISION: dropped the port. Removed amago/, metamon/, tcgmon/, tcgmon_plan.md and the out/tcgmon_*
+  checkpoints. KEEPERS (all pure-starter, no external RL lib):
+    * train_mymodel_bc.py --policy-loss ce  -> out/mymodel_lucario_bc_ce.pth (BC-distill the teacher
+      into MyModel; the native Huber-on-±1 policy loss was the weak imitator, CE fixed it 59%->85.7%).
+    * eval_mymodel.py — seat-swapped Wilson-CI eval of the BC MyModel vs random/teacher.
+    * tcg_model.mcts_agent value_mode="rollout" (default "net" unchanged) — rollout leaf eval.
+    * starter improvements kept: starter_rl_kaggle.py --deck (route the learner deck) + the
+      mirror-determinization fix in mcts_agent; eval.py --checkpoints round-robin mode.
+- What does NOT help (verified, don't retry): self-play training (cold AND warm-start from BC ->
+  DIVERGES vs the teacher); the MyModel value head (miscalibrated on the ~50/50 mirror -> search hurts).
+  EVAL DISCIPLINE: vs-teacher win-rate has high game-to-game variance — trust n>=200 (n=60 swung 49 vs
+  the reliable 40).
+
+2026-06-27 (cont.) — skill backlog + workflow-loop hardening (docs/config only, no app code).
+- skill_ideas.md: added a "Drift-resilience contract" (point-don't-copy; reference symbols by name
+  + grep, never pinned line numbers; discover paths/defaults at runtime; separate stable judgment
+  from volatile numbers; verify-before-recommend; name the single source of truth) + a "how these
+  compose with the workflow loop" note. Sharpened all 4 skill specs to obey it — fixed the file's
+  OWN pins (tcg_model.py:258 / run_battle.py:61 -> grep recipes), folded eval_info.md best-practice
+  into eval-discipline (process-vs-outcome, calibrate-before-trusting value metrics, always report
+  n+CI), and moved the "trust n>=200" number out to memory rather than hardcoding it here.
+  DECISION: build NO skill files yet (doc-only, per the backlog's own "not yet" stance).
+- .claude/settings.local.json: removed 12 dead allow-entries (tcgmon/ train+eval, deleted in the
+  AMAGO abandonment, + one stale scratchpad path) -> 17 remain. Added a Stop hook
+  (.claude/work-log-nudge.sh): nudges once (loop-safe via stop_hook_active) to update this log when
+  tracked files changed but work_log.txt didn't; silent otherwise. Pipe-tested all 5 branches.
+- CLAUDE.md: one-line drift-resilience convention under ## Conventions, pointing at the fuller
+  contract in skill_ideas.md.
