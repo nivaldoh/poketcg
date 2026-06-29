@@ -2,6 +2,7 @@
 - Start with minimal code that can be verified, always aim for simplicity, avoid verbosity, avoid boilerplate and things like backwards-compatibility. We want to keep our code clean and readable. Code/repo changes should ideally be minimal, incremental/decremental and verifiable.
 - Be careful with assumptions, and always explicitly state any that you think you need to make. Point out any information that you think you might be missing, and I will help you find it and make key decisions.
 - We should aim to structure the repo such that it makes it easier for you (Claude Code) to work with it.
+- Don't get overly attached to existing code. Refactor and rewrite freely if you see good opportunities to simplify things.
 - We should keep the work log lean and up-to-date so that we can properly keep track of what has been tried/done so far.
 
 # Roadmap
@@ -177,9 +178,6 @@ A replay is a Kaggle episode JSON: `rewards` (final result, e.g. `[1,-1]`) + `st
 Already fetched locally (all under gitignored `data/`): a sample replay `data/replays/episode-81475913-replay.json` (top team, 1 game) and the card-metadata `data/EN_Card_Data.csv` / `data/JP_Card_Data.csv` (the matching ID-list PDFs are ~320 MB and were skipped; both CSVs and PDFs are attached to `pokemon-tcg-ai-battle` and the strategy track).
 
 **Open decision:** build the replay → BC/IL parser next, or push further on self-play first.
-
-# Environment
-Our environment is Ubuntu WSL 2 through Windows 11. Kaggle CLI credentials have been set up at ~/.kaggle/access_token. The local env is very limited in terms of resources, so we won't be able to run large experiments locally. We should see if we're able to use the Kaggle CLI for this.
 
 # How to Submit to this Competition (only do this when explicitly asked)
 See kaggle-submission skill.

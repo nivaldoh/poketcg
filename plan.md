@@ -1,106 +1,184 @@
-# Plan — reaching a strong Pokémon TCG RL agent
+# NASHPG-Style Self-Play Agent for Pokémon TCG — Implementation Guidance
 
-## Context (why this plan exists)
+**Audience:** Claude Code (the implementing agent).
+**Goal:** Build a small Transformer policy+value network for the Kaggle PTCG AI Battle Challenge, trained by **self-play with a NASHPG-style regularized PPO objective** (PPO + KL-toward-a-periodically-reset reference policy).
 
-We've been iterating on this repo for a while but optimizing the wrong thing. The bulk of recent effort went into **behavior cloning** the one rule-based teacher (`rulebased_lucario`). BC works mechanically — `train_mymodel_bc.py --policy-loss ce` reaches ~85% move-agreement and the `bc_ce` checkpoint is our best learned policy — but its **ceiling is a single weak heuristic agent**. Cloning a weak teacher can never produce a strong agent. Meanwhile the one thing that would produce a strong agent — **RL that actually improves the model** — currently *regresses* it: the untrained `model0` + MCTS is still our strongest checkpoint, and every self-play / BC-warm-start-then-self-play run gets *worse*.
+This document explains the *concepts and decisions*, not the code. It assumes you have the starter notebook (`MyModel`, the sparse encoders, `mcts_agent`, `random_agent`, `sample_deck`), the rulebook, and the NASHPG paper available. **Verify SDK interfaces against the actual `cg` library rather than assuming** — several details below are stated from the starter code and must be confirmed.
 
-This plan refocuses on the real bottleneck — **making RL improve the policy** — and sequences the work simplest-first, because (a) we don't yet have evidence that a reward-driven gradient can move this model at all, and (b) our local box is too weak for big runs, so each step must be a *tiny* local experiment that proves a mechanism before we spend Kaggle compute scaling it.
+---
 
-Intended outcome: a clear, ordered experimental ladder where each rung has a hypothesis, a tiny local experiment, a go/no-go metric from the eval harness we already trust, and the specific model/code change it implies.
+## 0. The single most important framing
 
-## The core diagnosis (what is actually wrong with RL today)
+The starter notebook is an **AlphaZero-style** system: MCTS generates improved policy targets, the net learns to imitate MCTS visit counts and predict the outcome, and hidden information is handled by *determinization* (sampling concrete opponent cards to roll the simulator forward).
 
-Established by reading `starter_rl_kaggle.py` + `tcg_model.py` and the work log:
+**We are not doing that.** NASHPG is **model-free**: the network acts directly on its own observation, and learns from the returns of real self-play games. There is no search at action-selection time and no determinization needed to play.
 
-1. **No improving reward signal.** Self-play happens on a **Lucario mirror** (both sides the same deck). A mirror's game outcome is ≈ a coin flip, *uncorrelated with board state*, so there is nothing for a return-driven gradient to climb.
-2. **A divergent value-bootstrap loop.** The value target blends game outcome with the MCTS root backup (`grep -n "label = (value + sample.value)" starter_rl_kaggle.py`, and `LAMBDA`), and that backup comes from the network's **miscalibrated** value head (`mcts_agent` defaults to `value_mode="net"`). Training the head off its own miscalibrated estimate + a coin-flip outcome makes it drift further each iteration.
-3. **Strength comes from search, not the net.** PUCT + random-rollout leaf eval (`value_mode="rollout"`) is what makes `model0` strong; the learned value head actively *hurts* search on the mirror.
+So the plan is: **reuse the starter's architecture and feature encoders; replace its entire training method with NASHPG.** Keep the two paradigms cleanly separated. (MCTS can optionally come back later as a *test-time* search layer on top of a trained policy — out of scope for the first version.)
 
-Net effect: training has nothing good to learn from and a feedback loop that makes things worse — exactly the "model0 is strongest, training regresses" result in memory.
+---
 
-## North star
+## 1. What NASHPG is, distilled
 
-An agent whose strength comes from a **learned** policy (improved by reward + search), able to **exceed the single weak teacher** and climb the Kaggle leaderboard — not merely inference-time MCTS bolted onto an untrained network. Strength that scales with compute, not strength that is purely search-time.
+NASHPG (paper, Algorithm 4) is essentially **Independent PPO self-play plus one extra loss term**. The paper notes its JAX implementation differs from IPPO by ~20 lines. Do not implement the variational-inequality theory; you only need the practical recipe:
 
-## Operating principles (decisions for this plan)
+- Each player optimizes the usual expected return, **minus** `α · KL( π(·|o) ‖ ρ(·|o) )` averaged over visited information sets `o`, where `ρ` is a **frozen reference policy**.
+- Structure is two nested loops:
+  - **Outer loop (T iterations):** after the inner loop finishes, reset the reference `ρ ← current policy`.
+  - **Inner loop (K updates):** standard regularized PPO updates against the *fixed* `ρ` from the start of this outer iteration.
+- **Why it works (intuition):** plain self-play PPO can cycle and converge to an exploitable policy in imperfect-information games. The KL anchor stabilizes the inner optimization toward a *regularized* equilibrium; periodically resetting the anchor to the latest policy is what chases the *actual* (unexploitable) equilibrium. The paper proves this refinement scheme reduces distance to Nash in the idealized version (IMMD); NASHPG is the practical approximation.
+- **Do NOT anneal `α` to zero over training.** The paper's Appendix C shows annealing is unstable under stochastic gradients. The multi-round *reference reset* is the mechanism, not a decaying coefficient. Keep `α` fixed.
 
-- **RL is the focus.** BC is an *optional tool only* — usable as an RL warm-start or value-pretrain *if a tiny experiment shows it helps*; keep `bc_ce` as a fixed eval opponent. Not a development thrust.
-- **Simplest-first.** Escalate to a harder rung only after the simpler one passes its go/no-go. Never add search/value/league complexity to diagnose something a simpler setup answers.
-- **Tiny local to prove a mechanism; Kaggle to measure small effects.** Local runs can only resolve *large* effects (see MDE below). Defer building Kaggle scale-up tooling until a tiny recipe *demonstrably* improves the model.
-- **Change the model only when a limitation binds, measured.** Don't grow capacity or retarget the value head preemptively.
-- **Eval discipline is non-negotiable** (the `eval-discipline` skill): one **locked `--search-count`** across every comparison, **n ≥ 200** decisive games for win-rate claims, promotion **gated by SPRT** (not point estimates), anchored Elo, and the **mirror-only skill axis** (avoid the `sample_deck`-vs-Lucario deck confound).
+`α`, `K`, and `T` are the only new knobs over PPO. The paper uses `α = 0.2` across all of its games and finds a broad U-shaped sensitivity (too small → noise dominates; too large → stable but slow). Start at `0.2`.
 
-## Eval & tiny-experiment protocol (our measuring stick — set up once in R1, then freeze)
+---
 
-- **Primary metric:** win% vs the rule-based teacher on the **Lucario mirror** via `eval_mymodel.py` (both sides play `deck.csv`, so it's a clean skill axis, *not* deck-confounded). Bars from its docstring: **≥48% strong, >50% beats the teacher.** Run at **n ≥ 200**.
-- **Low-variance corroborator:** movement on the frozen held-out decision set via `eval_agreement.py` (one forward pass per decision; CIs shrink fast — tells us "the policy moved" long before win-rate can).
-- **Regression guard (cross-cutting):** `eval.py --mode gauntlet` vs the hash-pinned `out/anchor_model0.pth` (the `sample_deck` skill axis) — also tells us whether a Lucario-trained gain *generalizes* off its training deck.
-- **Promotion gate:** a new checkpoint replaces the current best only when `eval.py --mode sprt --checkpoint NEW --baseline-checkpoint BEST` returns **H1**. Never promote on a raw win% point estimate.
-- **MDE reality (why we scale on Kaggle):** detecting 55% needs ~780 decisive games, 60% ~190, 65% ~80 (`EVAL.md` §5). So **tiny local runs can only confirm large effects (≥60–65%)**; sub-5-point gains are a Kaggle-scale measurement. Use SPRT to stop early on big effects.
-- **CRN is impossible** (engine RNG unseedable) — reliability comes from n + SPRT + the frozen anchor, never paired replicates.
+## 2. Reuse vs. drop (mapping onto the starter)
 
-> Discover defaults/paths at runtime (`--help`, the harness manifest), per the repo's drift-resilience contract. Don't hardcode `out/*.pth` names or flag defaults; verify a symbol/flag exists before relying on it.
+**Reuse as-is:**
+- `MyModel` (encoder = value head, decoder = policy head) as the inference substrate.
+- `get_encoder_input` and `get_decoder_input` — the sparse feature engineering is domain-specific and already correct. **Do not rebuild feature extraction.**
+- `LearnInput` — use it to assemble batched sparse inputs for minibatches.
+- Card/attack metadata loading (`all_card_data`, `all_attack`, `card_table`).
+- `random_agent` — keep as an evaluation baseline.
+- `sample_deck` — the deck to train/self-play with for the first version.
 
-## The ladder — major high-level steps
+**Drop / ignore for training (these are MCTS-specific):**
+- `mcts_agent`, `Node`, `Child`, `create_node`, `_rollout_value`, `SEARCH_COUNT`.
+- The determinization sampling inside `mcts_agent` (sampling opponent deck/hand/prizes). **Real self-play does not need it** — the engine holds the true hidden state and each agent acts on its own observation.
+- `search_begin` / `search_step` / `search_end` (these drive determinized planning).
+- The MCTS-only output transforms: the `tanh` on the policy head and the `exp(policy[i] * 10.0)` prior sharpening. The visit-count-based policy targets and the rollout value mode.
 
-Each rung: **hypothesis → minimal experiment → go/no-go (which eval) → code/model change (real symbols).**
+---
 
-### R1 — Lock the protocol + re-confirm the baseline (no training)
-- **Hypothesis:** the bar to beat is `model0` + MCTS(rollout); our metric must resolve effects at feasible n.
-- **Experiment:** run `eval_mymodel.py` (greedy + mcts; vs random + teacher) and `eval.py --mode gauntlet` once on `model0` and `bc_ce`; record numbers + the comparability manifest; (re)build the frozen `agreement_set` for `eval_agreement.py`.
-- **Go/no-go:** numbers reproduce prior figures within CI; harness self-checks pass (random-vs-random ≈ 50%); `anchor_model0` sha matches `EVAL.md`.
-- **Change:** none. Pin the chosen `--search-count` in the run notes.
+## 3. Environment & data essentials
 
-### R2 — Can a reward move the policy at all? *(the simplest RL — START HERE)*
-- **Hypothesis:** plain **REINFORCE on the policy head**, vs a **fixed** opponent, moves the *raw greedy policy* in the winning direction — unlike the mirror's coin-flip outcome. (BC already proved the optimizer/featurization can move the policy *toward a label*; this proves a *reward* can.)
-- **Experiment (tiny):** init from `model0`; substrate = Lucario `deck.csv`; opponent = **fixed `random_agent`** (max headroom, unconfounded). Act by **sampling** `softmax(policy/τ)` over single-select options (reuse `auto_resolve` / `is_policy_select` from `eval_mymodel.py` for non-policy nodes); **no `mcts_agent` in the loop.** Loss `= −Σ logπ(a)·(R − b̄) − β·H(π)` with `R` = final **prize-differential** (dense; same quantity `_rollout_value` uses), `b̄` = batch-mean baseline, entropy `β ≈ 0.01`. **Value/encoder head frozen** (`requires_grad_(False)`). ~200–500 games/iter, lr ~3e-4, 3–5 iters — fits the local box.
-- **Go/no-go:** greedy win% of the trained **raw policy** vs fixed random (`eval_mymodel.py --agents greedy --opponents random`) rises CI-separated above the `model0` greedy baseline at n ≥ 80 (a ~50→≥65% move is detectable); corroborated by `eval_agreement.py` movement beyond CI. If it does **not** move, that itself diagnoses a coverage limit (see R5b).
-- **Change:** focused rewrite of data-gen + loss in `starter_rl_kaggle.py` (sample-act instead of `mcts_agent`; single policy-gradient loss; drop the value loss). Reuse `get_encoder_input` / `get_decoder_input` / `eval_nn` / `LearnInput` from `tcg_model.py`. Note: `eval.py make_model` is **MCTS-only**, so for raw-policy A/B use `eval_mymodel.py` greedy win% + Wilson CI, or add a greedy/`--search-count 0` actor to `make_model`.
+**Running a game:** Use the battle-play APIs (`battle_start`, `battle_select`, `battle_finish` from `cg.game`) to run real self-play games. **Inspect their exact signatures and the game-loop contract first** — the starter only shows them imported, not used end-to-end. Expect a loop of: get an observation for the player to move → that player picks an action → submit via `battle_select` → repeat until terminal.
 
-### R3 — Expert Iteration: search as the policy-improvement operator *(value dropped)*
-- **Hypothesis:** the real gains come from **distilling the search-improved policy** — a feedforward policy can't represent the teacher's/search's lookahead (the Metamon/AMAGO ceiling). MCTS+rollout is a policy-improvement operator that does **not** need the broken value head.
-- **Experiment:** ExIt loop vs a **fixed** opponent (start: teacher on `deck.csv`). Act with `mcts_agent(..., value_mode="rollout")`; **policy target = MCTS visit-count distribution, cross-entropy loss** (CE beat Huber decisively in BC); **no value loss.** Add **Dirichlet root noise + a visit temperature** so search actually explores — today `mcts_agent` is deterministic over a near-one-hot `softmax(policy*10)` prior, so visit-count distillation would be a no-op fixed point.
-- **Go/no-go:** vs-teacher win% on `deck.csv` crosses the BC ceiling; promotion gated by `eval.py --mode sprt` vs current best; regression-guarded by the gauntlet vs `anchor_model0`.
-- **Change in `tcg_model.py`:** pass `value_mode="rollout"` at the `mcts_agent` call sites; replace the advantage-style policy target (`grep -n "sample.policy\[i\]" tcg_model.py`) with normalized visit counts + CE; add root noise/temperature in `mcts_agent`; stop writing `sample.value` and drop the value branch.
+**Observation structure** (from `to_observation_class(obs_dict)`):
+- `obs.current` — game state: `players[...]` (each with `active`, `bench`, `hand`/`handCount`, `prize`, `discard`, `deckCount`, special-condition flags), `stadium`, `turn`, `firstPlayer`, `yourIndex`, and `result`.
+- `obs.select` — the current decision: `option` (list of legal options), `maxCount` (how many to select), `context`, and area lists (`deck`, `looking`) used by some option types.
 
-### R4 — League play vs frozen snapshots *(kill the mirror divergence)*
-- **Hypothesis:** simultaneous mirror self-play is the divergence source (non-stationary opponent + coin-flip reward). A **pool of frozen** past checkpoints keeps the opponent stationary while still self-improving toward super-teacher strength.
-- **Experiment:** maintain a frozen pool `{model0, bc_ce, each SPRT-accepted RL ckpt}`; sample one opponent per game; train only the learner (R3 engine). Promote into the pool **only on SPRT-H1 vs current best** (fictitious self-play / AlphaStar-lite).
-- **Go/no-go:** a monotone, SPRT-gated climb on vs-teacher win% **and** non-regression on the frozen gauntlet anchor (catches "beats the league but forgot how to beat model0").
-- **Change in `starter_rl_kaggle.py`:** replace the `--rb-frac` simultaneous-mirror block with a frozen-opponent sampler; **delete the value-target blend** (`label = (value + sample.value)*0.5`) and the `LAMBDA` bootstrap.
+**Reading the outcome for reward** (grounded in the starter's `create_node` / `_rollout_value`): the game is terminal when `obs.current.result >= 0`. From the perspective of the player whose index is `idx`:
+- `result == 2` → draw → reward `0`
+- `result == idx` → win → reward `+1`
+- otherwise → loss → reward `-1`
 
-### R5 — Fix model/representation limits as they bind
-- **R5a — Determinization correctness (a real bug; pull earlier than the rest):** `mcts_agent`'s `search_begin` is hard-wired to Lucario — it injects a Lucario basic for the face-down active and samples the opponent deck from *your* deck (`grep -n "opponent_active=\|opponent_deck=" tcg_model.py`). Off the Lucario mirror this simulates impossible worlds and corrupts search **today**. Fix: parameterize the opponent model; sample **multiple** determinizations per move and average (mitigates PIMC strategy-fusion). Go/no-go: gauntlet skill axis vs anchor holds/improves on `sample_deck`.
-- **R5b — Capacity / coverage (only when it binds):** the policy is trained on **single-select** nodes only, and the action enumerator builds **maxCount-sized combos only** — so "select up to N" / number-menu decisions are `auto_resolve`'d and the gradient never touches them. This likely caps how much outcome the policy can move (and is the prime suspect if R2 shows no movement). Fix: extend `get_decoder_input` + the enumerator to `minCount..maxCount` and train on those nodes **before** spending parameters on `d_model`/depth. Gate each change on SPRT.
+**Actions:** An action is a list of `maxCount` option indices chosen from `obs.select.option` (see `random_agent`, which does `random.sample(range(len(option)), maxCount)`). For most decision points `maxCount == 1`; the combinatorial case (e.g. "discard 2") is where action handling gets more involved (Section 4).
 
-### R6 — Scale on Kaggle *(three distinct items; build once a tiny recipe works)*
-- **(a) Push *training* to Kaggle compute — does not exist; the real engineering item.** Package the repo + a train entrypoint as a Kaggle kernel (`kaggle kernels push` + `kernel-metadata.json`, GPU on); pull `out/*.pth` back; validate parity by running the *same tiny config* locally and on the kernel.
-- **(b) Submit to validate the proxy — already exists** (`kaggle-submission` skill / `pack_submission.py`). Periodically submit and check that local vs-teacher / gauntlet gains track leaderboard movement.
-- **(c) Replay loader — does not exist; highest-leverage data unlock.** Replays are already in SDK dict form; a small parser feeds `get_encoder_input` / `get_decoder_input` directly → diverse frozen opponents for R4, breaking single-teacher Goodhart. Parallel enabler, off the critical RL path.
+---
 
-## Pitfalls to avoid (and where the ladder handles each)
+## 4. Model & action-space handling
 
-| Pitfall | Defense |
-|---|---|
-| Non-stationary mirror self-play (tail-chasing) | fixed opponent (R2–R3); frozen-snapshot league (R4); never simultaneous mirror |
-| Uninformative reward (mirror ≈ coin flip) | fixed *asymmetric* opponent so outcome ∝ policy; delete the value blend (R4) |
-| Sparse binary reward / weak credit assignment | prize-diff shaping (R2); MCTS-rollout does credit assignment in ExIt (R3) |
-| Deadly triad off a miscalibrated critic | no learned critic early — freeze value head, MC baseline, rollout leaves (R2–R3) |
-| Determinized-MCTS pathologies (strategy fusion, the Lucario hardcode) | correct + multi-sample determinization (R5a); never peek at hidden info |
-| Policy/entropy collapse under a peaky `tanh×10` policy | entropy bonus + sampling temperature (R2); KL-to-init/BC trust region if needed |
-| Eval self-deception (small-n swings, vs-random saturation, deck confound, search budget) | SPRT/gauntlet/agreement, n ≥ 200, mirror-only skill axis, locked `--search-count` (R1) |
-| Goodhart on one teacher/deck | league diversity (R4) + replay opponents (R6c) + periodic Kaggle-proxy (R6b) |
+**Actor-critic split** (already in `MyModel.forward`): the encoder produces `value = V(state)` independent of the candidate actions; the decoder cross-attends to the encoder output and produces **one logit per candidate action**, i.e. `π(action | state, candidates)`.
 
-## What we will NOT retry (do-not-retry facts)
-- Simultaneous mirror self-play with the outcome+backup value blend (diverges — the thing this plan replaces).
-- `value_mode="net"` MCTS on the mirror (miscalibrated; rollout is stronger).
-- The Metamon/AMAGO/tcgmon port (matched the simple starter; no benefit).
-- Treating BC as the primary path (ceiling = one weak teacher).
-- Trusting vs-teacher win-rate at n ≈ 60, or vs-random as a skill signal for an MCTS agent (saturated).
+**Keep the value head's `tanh`** — rewards live in `[-1, 1]`, so a `tanh`-bounded value is appropriate. **Remove `tanh` from the policy path** and treat the decoder output as raw logits to be softmaxed. (The `tanh` + `×10` in the starter exists only to turn the head into MCTS priors.)
 
-## Critical files
-- `starter_rl_kaggle.py` — R2 REINFORCE rewrite (sample-act, single PG loss, freeze value head); R4 frozen-opponent sampler; delete the value blend + `LAMBDA`.
-- `tcg_model.py` — `mcts_agent` rollout/visit-count-CE target + root noise (R3); determinization fix (R5a); enumerator/decoder coverage (R5b).
-- `eval_mymodel.py` — primary R2–R4 metric (greedy/MCTS vs random/teacher on `deck.csv`).
-- `eval.py` — `--mode sprt` promotion gate + `--mode gauntlet` regression guard (consider a greedy actor in `make_model` for raw-policy A/B).
-- `eval_agreement.py` — low-variance corroborator on the frozen set.
+**Variable / combinatorial action space:** The policy is a categorical distribution over the *enumerated candidate actions* at each decision point. When `maxCount == 1` this is a plain categorical over legal options. For `maxCount > 1`, enumerate candidate index-lists (the starter caps this at 64 in `create_node`). To act: enumerate candidates → decoder logits → masked softmax → sample one candidate → submit its index-list. Store `(state features, candidate set, chosen index, log-prob)`.
+
+Two consistency requirements that will silently corrupt PPO if violated:
+- **The candidate enumeration must be identical at action-time and at update-time** (same order, same cap). Store the candidate set with the transition, or regenerate it deterministically.
+- **Padding for batching:** `MyModel`'s decoder does `p.reshape(batch_size, -1, d_model)`, which assumes every batch item has the *same* number of candidate words. The encoder is fine (always 24 words/state); only the policy side has this issue. **Pad each candidate set to a fixed `K_max` (e.g. 64)** and apply a legality/padding mask in the softmax (set padded/illegal logits to `-inf`). This makes batching valid and the categorical well-defined.
+
+**Network sharing:** Use a **single shared network** for both seats. The encoder already takes the acting player's deck (`get_encoder_input(obs, your_deck)`), so one network conditioned on `your_deck` can pilot either side. This is simplest and correct for a mirror match (same deck both sides), and naturally extends to differing decks later since the deck is an input feature. The frozen reference `ρ` is just a snapshot of this one network.
+
+---
+
+## 5. Training loop
+
+Instantiate Algorithm 4 with PPO as the inner optimizer:
+
+1. Init policy+value net `θ`; set reference `ρ ← θ`.
+2. **Outer loop** `t = 0 … T-1`:
+   - **Inner loop** `k = 0 … K-1`:
+     - Collect self-play games with the current net acting for **both** seats.
+     - Compute per-player advantages/returns (see below).
+     - PPO update (clipped surrogate + value MSE + entropy bonus) **plus** the KL term `α · KL(π_θ ‖ ρ)` over visited info sets.
+   - Reset `ρ ← θ`.
+
+**Per-player credit assignment (the part most likely to break):** A game is an *interleaved* sequence of decisions by both players, but each player only sees its own information sets. **Do not** treat the interleaved sequence as one agent's MDP trajectory. Instead:
+- Split the game into each player's own subsequence of decisions.
+- From player A's view, A's opponent's moves are folded into the environment dynamics: the "next state" after A's decision is A's *next* decision.
+- With `γ = 1` and reward only at termination, every decision in a won game gets return `+1` (lost game `-1`) from that player's perspective; player B's terminal reward is the negation of A's (zero-sum).
+- Use GAE (`λ = 0.95`) with `V(state)` as the baseline to control the (high) variance from sparse, delayed rewards.
+- With a shared net, concatenate both players' `(state, candidate set, action, advantage, return, reference logits)` samples into one PPO batch.
+
+**KL term mechanics:** At each visited info set, you have the current policy's distribution over that decision's candidate set and the reference `ρ`'s distribution over the *same* candidates. `KL = Σ π log(π/ρ)`. Run the **frozen** `ρ` (no gradient) on the stored states to get its logits, compute the KL, and add `α · KL` to the loss. This is one extra forward pass through a frozen network per minibatch — cheap, and conceptually identical to a KL-to-anchor term in RLHF.
+
+**Everything else is vanilla PPO.** The only deltas from Independent PPO are: (1) the added `α · KL` loss term, and (2) the periodic `ρ` reset every `K` inner updates.
+
+Note on the value head: the starter avoids its value head in MCTS because mirror-BC "can't calibrate" it. That concern does not apply here — PPO trains the value head directly against returns, so it will calibrate over training. Use it as the critic; no rollout value needed.
+
+---
+
+## 6. Reward design
+
+Start with the **sparse terminal reward**: `+1` win, `-1` loss, `0` draw (Section 3). This is unbiased, bounded, and matches the `tanh` value head. The paper uses pure outcome rewards throughout and relies on the value baseline + GAE to make it learnable.
+
+Optional later lever if learning is too slow: a **prize-differential shaping** signal, e.g. `(opp_prize_remaining − your_prize_remaining) / 6` from the acting player's perspective (this is exactly the proxy the starter's rollout used). Keep it **off** for the first version — it biases toward prize-greedy play, which is not always optimal (board control sometimes matters more), and adds a tuning surface you don't need yet.
+
+---
+
+## 7. Test-time behavior
+
+**Sample from the policy at test time; do not take argmax.** A deterministic policy is exploitable — the whole point of the equilibrium objective is a *mixed* strategy. Argmax throws that away.
+
+For a Kaggle ladder there is a nuance: a Nash-style policy is *unexploitable* but not necessarily *maximally exploitative* of weak opponents, and the ladder rewards exploiting weak opponents. Default to sampling from the trained policy; you can experiment with a softmax temperature as a single knob (slightly sharper to exploit weak fields, softer to stay robust), but treat that as a late optimization, not a first-version concern.
+
+---
+
+## 8. Evaluation
+
+Because of coin flips and card draws, **single games are very noisy** — every metric needs many games and a few seeds.
+
+- **Primary — head-to-head win rate** against a fixed opponent set: `random_agent`, the MCTS starter agent, and frozen *past versions of self*. Play hundreds-to-thousands of games per matchup with **randomized seat assignment** (control for first-player advantage), and report mean ± confidence interval. The paper uses 1,024 games × 4 seeds. Win rate vs. the MCTS starter is your cheapest meaningful **progress signal** during development.
+- **Secondary — approximate exploitability:** train a fresh PPO best-response against your *frozen* policy and measure how much it beats you (the paper's "Approx-BR"). This directly measures the thing NASHPG is supposed to deliver (low exploitability), but it's expensive — it trains a whole new agent — so run it periodically (e.g. at checkpoints), not every step.
+- **Cheap sanity checks:** (a) value-head calibration — does predicted `V(state)` track the eventual outcome? (b) policy entropy — is it collapsing toward determinism (bad) or staying healthily stochastic?
+
+Keep the first-version eval to the primary win-rate signal plus occasional exploitability checks. Resist building an elaborate intermediate-decision-quality benchmark suite before the pipeline learns at all.
+
+---
+
+## 9. Initial hyperparameters
+
+From the paper's shared PPO config (Table 4), which is a sound starting point:
+- Optimizer **AdamW**, learning rate **3e-4**
+- PPO epochs **4**, minibatches **4**
+- Discount **γ = 1** (games are finite/episodic)
+- GAE **λ = 0.95**, clip **ε = 0.2**
+- Entropy coefficient **0.1** (deliberately high — encourages the stochastic/mixed policy you want here)
+- Max grad norm **0.5**
+
+NASHPG-specific:
+- KL coefficient **α = 0.2**
+- Outer iterations **T** and inner updates **K**: the paper uses `K = 10,000`, `T = 25` (≈250k updates). **That assumes a JAX-vectorized environment.** For your first runs with the Python `cg` simulator, start much smaller (e.g. `K ≈ 500–2000`, `T ≈ 5–15`) just to validate the pipeline, then scale with your compute budget. `K`/`T` are pure budget knobs.
+
+Network (start small, scale later):
+- `d_model ≈ 128`, `num_heads = 4`, `2` encoder layers + `2` decoder layers. (The paper's most complex game, Hold'em, uses a 512-dim / 4-head Transformer; TCG is complex and long-horizon, so you can grow toward that, but begin small.)
+- Candidate cap `K_max ≈ 64`.
+
+**Measure the simulator's steps/sec before sizing anything else** — rollout throughput, not GPU, will set your effective scale.
+
+---
+
+## 10. Risks & pitfalls
+
+- **Simulator throughput is the main bottleneck.** The `cg` SDK is a Python rules engine, not a JAX-vectorized environment like the paper's. Rollout collection will dominate wall-clock. Measure steps/sec early; parallelize *independent games across processes* if the SDK allows. The first goal is a working learning signal, not paper-scale update counts.
+- **Per-player sign/perspective bugs.** Getting the value and reward perspective wrong for one seat is the classic self-play bug. The starter's value sign-flipping (`v = value if state.yourIndex == your_index else -value`) is a hint at how careful this is. Test it explicitly.
+- **Action-enumeration inconsistency** between act-time and update-time → wrong log-prob ratios → silently broken PPO. Store/regenerate candidates deterministically.
+- **Candidate padding/masking.** Forgetting the uniform-count requirement (Section 4) will either crash the reshape or batch garbage. Mask padded/illegal candidates to `-inf` in the softmax.
+- **Leaving `tanh` on the policy head.** Use raw logits for the policy.
+- **Sparse + long-horizon credit.** Long games with terminal-only reward stress the value baseline; if learning stalls, check value calibration before adding reward shaping.
+- **Single-deck mirror self-play may not generalize.** The competition involves many decks and unknown opponents. Training only mirror self-play on `sample_deck` produces an agent good at *that* matchup. This is fine for getting the pipeline working; flag deck diversity (and proper opponent modeling) as a deliberate later step, not a silent assumption.
+- **KL reset cadence.** If `K` is too small the anchor barely constrains anything; too large and it over-constrains and slows refinement. Tune around the paper's ratio once the basics work.
+- **Do not reintroduce MCTS determinization into self-play.** It's unnecessary for model-free play and, configured wrong, actively incorrect.
+
+---
+
+## 11. Suggested first-milestone path
+
+1. **Wire the game loop** with `random_agent` on both sides; confirm you can run full games and read outcomes via `result`. (Pure plumbing — no learning yet.)
+2. **Plug the net in as actor-critic** and train with **PPO only (`α = 0`)** until it reliably beats `random_agent`. This validates rollout collection, per-player credit assignment, batching/masking, and log-prob bookkeeping — independently of the NASHPG-specific machinery.
+3. **Add the KL-to-reference term + outer reset** (full NASHPG). Confirm stability (no divergence) and that it beats the MCTS starter and earlier checkpoints in head-to-head.
+4. **Scale** net size / `K` / `T` as compute allows, and add periodic approximate-exploitability checks.
+
+Throughout: keep `α = 0.2`, sample (don't argmax) at test time, and prefer the simplest correct version of each component over a clever one.
