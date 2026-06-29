@@ -61,6 +61,26 @@ def greedy_agent(obs_dict, deck, model):
     return [int(max(range(n_opt), key=lambda i: policy[i]))]
 
 
+# The codebase's fixed policy convention: logits ≡ decoder_out × 10 (MCTS uses exp(p·10)),
+# so π = softmax(10·tanh(decoder_out)). SINGLE SOURCE OF TRUTH — train_nashpg imports this so
+# its act-time / update-time / eval-time distributions stay identical (PPO ratio correctness).
+LOGIT_SCALE = 10.0
+
+
+def sampled_agent(obs_dict, deck, model):
+    """No-search BARE-POLICY agent: SAMPLE (not argmax) from softmax(policy·LOGIT_SCALE) on
+    single-select policy decisions; auto-resolve everything else. Use this (not greedy_agent)
+    to evaluate a trained policy: it's a mixed/stochastic policy, and argmax misrepresents it."""
+    o = to_observation_class(obs_dict)
+    sel = o.select
+    if not is_policy_select(sel):
+        return auto_resolve(sel)
+    n_opt = len(sel.option)
+    _, policy = eval_nn(get_encoder_input(o, deck), get_decoder_input(o, [[i] for i in range(n_opt)]), model)
+    probs = torch.softmax(torch.tensor(policy) * LOGIT_SCALE, dim=0)
+    return [int(torch.multinomial(probs, 1).item())]
+
+
 def play(me_fn, opp_fn, deck, n_games, seed):
     random.seed(seed)
     w = l = d = 0

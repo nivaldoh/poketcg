@@ -85,20 +85,35 @@ def make_iono() -> Agent:
     return Agent("iono", rb_iono.agent, rb_iono.my_deck)
 
 
-def make_model(path: str) -> Agent:
-    """Load a checkpoint into an MCTS agent (plays sample_deck).
+# How checkpoints play, set once in main() (like tcg_model.SEARCH_COUNT). "sampled" = no-search
+# bare policy (honest "did the POLICY improve?" read); "mcts" = the default search-on-top agent.
+AGENT_KIND = "mcts"
 
-    MCTS depth is the module-global `tcg_model.SEARCH_COUNT`, set once in main().
-    """
+
+def make_model(path: str) -> Agent:
+    """Load a checkpoint into an Agent that plays sample_deck. Kind set by the module-global
+    AGENT_KIND (main()): "mcts" (depth = tcg_model.SEARCH_COUNT) or "sampled" (no-search)."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MyModel(128, 2, 256, 1, 1).to(device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
 
-    def fn(obs_dict):
-        with torch.inference_mode():
-            return mcts_agent(obs_dict, sample_deck, model)[0]  # drop training sample
+    if AGENT_KIND == "sampled":
+        # RISK (load-bearing): import sampled_agent LAZILY here, NOT at module top. eval_mymodel
+        # does `from eval import wilson` at its top, so a top-level `from eval_mymodel import
+        # sampled_agent` would run before wilson is defined -> circular ImportError. A function-body
+        # import runs only after eval is fully initialized.
+        from eval_mymodel import sampled_agent
 
+        def fn(obs_dict):
+            with torch.inference_mode():
+                return sampled_agent(obs_dict, sample_deck, model)
+    else:
+        def fn(obs_dict):
+            with torch.inference_mode():
+                return mcts_agent(obs_dict, sample_deck, model)[0]  # drop training sample
+
+    # Keep the "model:" name prefix either way so battery Elo bookkeeping (is_model) still works.
     return Agent(f"model:{os.path.basename(path)}", fn, sample_deck)
 
 
@@ -554,6 +569,9 @@ def main() -> int:
     ap.add_argument("--max-games", type=int, default=400, help="SPRT game cap (seat-swapped)")
     ap.add_argument("--search-count", type=int, default=4,
                     help="MCTS rollouts per move for model agents (higher = stronger, slower)")
+    ap.add_argument("--agent-kind", choices=["mcts", "sampled"], default="mcts",
+                    help="how checkpoints play: mcts (default) or sampled = no-search bare policy "
+                         "(use for an honest 'did the POLICY improve?' read; --search-count then unused)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -566,6 +584,8 @@ def main() -> int:
     except Exception:
         pass
     tcg_model.SEARCH_COUNT = args.search_count
+    global AGENT_KIND
+    AGENT_KIND = args.agent_kind   # read by make_model; mirrors the SEARCH_COUNT-set-in-main pattern
 
     if args.mode == "gauntlet":
         return run_gauntlet(args)

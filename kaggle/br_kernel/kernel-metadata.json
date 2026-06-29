@@ -1,0 +1,13 @@
+{
+  "id": "nivald0/poketcg-br-template",
+  "title": "poketcg-br-template",
+  "code_file": "run_br.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_internet": "false",
+  "dataset_sources": ["nivald0/poketcg-nashpg-code-ckpts"],
+  "competition_sources": ["pokemon-tcg-ai-battle"],
+  "kernel_sources": []
+}

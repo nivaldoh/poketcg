@@ -14,7 +14,6 @@ Here are just some personal notes I'm scribbling. Agents should ignore this file
 - find a way to come up with a training set containing key plays (like puzzles), or at least have some way to ensure that the model has seen the main strategy of all major metagame decks
 - experiment with data generation
 - take metagame report, ensure it matches available cards, find deck lists and make sure the model knows how to play at least one of these decks against all of the others
-- download rule book and ensure the code is aligned with it
 - use kaggle replays
 - look for similar problems including in different domains to gain inspiration for different approaches. I think this is a two-player zero-sum imperfect-information game
 

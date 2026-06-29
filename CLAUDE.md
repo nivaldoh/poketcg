@@ -55,6 +55,7 @@ Full reference — observation/option/card model, driver loop, Search API & MCTS
 
 ## Conventions
 
+- Be careful with assumptions and overconfident claims, especially on conceptual/theoretical aspects. You are an agent focused on coding. Theory claims need to be marked for independent review.
 - New execution/training code should ship the smallest possible verification (e.g. a short battle asserting a `result`), per the README's "verifiable results" goal.
 - Keep the Kaggle submission boundary clean: a deployable agent is ultimately `main.py` (`agent(obs_dict)`) + the `cg` package + `deck.csv`, packaged as `submission.tar.gz`. Don't entangle local training-harness code with it.
 - Write against drift: in docs, skills, and memory, reference symbols by name + a grep recipe (never pinned line numbers) and discover paths/defaults at runtime (never hardcode `out/*.pth`, `deck.csv`, or flag defaults). Verify a file/symbol/flag still exists before recommending it; the `cg` engine and `all_card_data()` are ground truth over any doc where they conflict. (Fuller per-skill version: `docs/skills_and_hooks.md` → "Drift-resilience contract".)

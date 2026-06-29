@@ -1,1 +1,101 @@
 Work log (lean — what's been tried/done).
+
+2026-06-29 — Cross-checked plan.md against the cloned original NashPG impl
+(nash_policy_gradient_public/, JAX/Flax/distrax) and extended the plan.
+- Verified our core recipe is FAITHFUL: PPO-clip + entropy + forward-KL to a
+  frozen "magnet" rho, reset rho<-theta every outer iter, mag_coef(alpha)=0.2
+  fixed (update_agent.py / nash_pg.py / conf/algorithm/nash_pg.yaml).
+- Found 3 divergences, all flagged for theory review (new plan.md §2.5):
+  GAE lambda=0.95 (not MC lambda=1) -> promoted GAE to first-class (§4);
+  entropy 0.05 (not 0.01) -> now a swept knob; PPO-clipped value loss (not MSE).
+- Best idea copied: approximate exploitability via an RL best-response
+  (eval/compute_exploitability_rl.py) — no game tree needed, runs on cg; added
+  as milestone §6.4 (= train_nashpg.py with alpha=0, frozen opp, single seat).
+- Added PPO health diagnostics to log (clip_frac/approx_kl/explained_var/mag_kl).
+- Verdict (new §6.5): do NOT port — JAX+vectorized-envs+fixed-action-head vs our
+  PyTorch MyModel (variable-candidate cross-attn) + serial cg singleton;
+  reimplement from the spec. Copy: loss algebra, per-player GAE carry,
+  Transition/Dataset schema, mixture_agent concept (deferred league).
+- Fixed stale facts: train_reinforce.py is in-tree (not deleted); R11->R12 ref.
+- No code written/run; plan.md remains a plan. train_nashpg.py is future work.
+
+2026-06-29 — Implemented plan.md v1: train_nashpg.py (self-play NASHPG core).
+- Model-free self-play PPO-clip + entropy + forward-KL to a frozen rho (reset
+  rho<-theta per OUTER iter); from-scratch MyModel(128,2,256,1,1), sample_deck
+  mirror, single-select policy nodes only, terminal +-1/0 reward. No MCTS.
+- Reuses tcg_model (get_*_input/eval_nn/LearnInput/sample_deck), eval_mymodel
+  (is_policy_select/auto_resolve), eval (Agent/play_match/wilson/make_rulebased),
+  cg.game battle loop. Adapts train_reinforce's collect + masked-pad skeleton.
+- Key correctness points (all as inline RISK comments): sample at tau=1 (R3),
+  capture old_logp+V_old at collection (R4), per-item decoder pad to W (R5),
+  -1e9 mask not -inf (R6), seat-relative V => NO sign-flip (pair each record with
+  its own seat's terminal G), rho frozen/out-of-optimizer (R13).
+- Unified GAE (--lam, default 1.0=MC smoke; 0.95 real) — lam=1 telescopes to the
+  MC baseline, one code path. --clip-vloss flag for the PPO-clipped critic (R7).
+  alpha FIXED 0.2 (no anneal); --ent-coef sweep 0.01-0.05.
+- JSONL diag logger -> out/<prefix>_metrics.jsonl (ppo/critic/entropy/approx_kl/
+  mag_kl/clip_frac/explained_var/games_per_s). No-search SAMPLED eval (R11) vs
+  frozen init (mirror=skill) + rulebased teacher (deck-confounded live signal).
+- SMOKE GREEN: `--outer 2 --inner 2 --games 4 --eval-games 20` -> every game
+  result>=0, finite loss each update, clip_frac~0.1-0.3 (clip engages),
+  explained_var 0.06->0.52 (critic learning), mag_kl bounded, entropy ~0.5 (not
+  collapsed). ~1 game/s (R10 confirmed: real runs need budget sizing). NO learning
+  claim — n=20 mirror CIs fully overlap (45/50/55%); that needs n>=200 (R1).
+- DEFERRED (per approved scope): §6.4 RL-best-response/exploitability mode; the
+  real PPO-only(alpha=0) and full-NASHPG runs at n>=200 (plan §6 milestones 2-4).
+
+2026-06-29 — Learning-validation runs (plan milestones 2-4): v1 NASHPG LEARNS.
+- Added a no-search bare-policy eval path: eval_mymodel.sampled_agent + LOGIT_SCALE
+  (single source), deduped in train_nashpg, wired into eval.py via --agent-kind
+  sampled (lazy import dodges the eval<->eval_mymodel circular edge). eval.py
+  --mode sprt/gauntlet now run bare-policy (no MCTS confound, R11).
+- Fixed a real trainer bug the smoke missed: per-minibatch adv normalization used
+  unbiased std -> NaN loss when a buffer's last minibatch had B==1 (len % bs == 1);
+  the loss-finiteness assert caught it loudly. Fix: std(unbiased=False) (same for
+  the explained_var .var(), B==1 edge, logging-only).
+- Two runs identical except alpha, seed 0 (shared init): 6/4/128, epochs 2, lam 0.95
+  (GAE), --clip-vloss, ent-coef 0.05. ~1.7 games/s, ~50 min each. Diagnostics healthy
+  both: approx_kl settles ~0.01, entropy mid ~1.3-1.6 (no collapse/flatten),
+  explained_var ~0.3-0.5 (critic tracks); alpha=0.2 mag_kl shows the predicted
+  SAW-TOOTH (drops to ~0.01 right after each rho<-theta reset, rises within the outer).
+- RIGOROUS no-search SPRT (sampled mirror, seat-swapped, max-games 400):
+  * a0_final  vs a0_init : ACCEPT H1, 33/2 (94.3%), 35 games  -> plain PPO learns.
+  * a02_final vs a02_init: ACCEPT H1, 19/0 (100%), 19 games   -> NASHPG learns.
+  * a02_final vs a0_final: a0 WINS, 233/167 (a02 41.8%, CI 37.0-46.6 EXCLUDES 50%).
+- VERDICT = SUCCESS (mechanism validated): both decisively beat their (near-random)
+  init with healthy diagnostics, no flatten/collapse -> the trust-region machinery
+  works end-to-end. CAVEATS (do not over-read): (1) alpha=0.2 ~8% weaker HEAD-TO-HEAD
+  than alpha=0 is NOT evidence the anchor is bad -- a Nash policy is UNEXPLOITABLE,
+  not max-exploitative (plan R2); head-to-head win% is the wrong metric for the anchor.
+  (2) "beats frozen init" is a weakish bar (init ~ near-random); the vs-teacher signal
+  (deck-confounded) is still a loss (<=30%). Distinguishing the two TRAINED policies
+  needed all 400 games (R1 near-symmetric low-SNR regime).
+- NEXT: §6.4 BR-exploitability is now the principled anchor test (does alpha=0.2 lower
+  exploitability vs alpha=0?); + Kaggle scale for absolute strength. Artifacts:
+  out/nashpg_a0*.pth, out/nashpg_a02*.pth, out/nashpg_a0{,2}_metrics.jsonl.
+
+2026-06-29 — §6.4 BR-exploitability mode + Kaggle remote-training path (plan-rosy-pie).
+- train_nashpg.py: added --br-vs (BR-exploitability mode), --load (resume), --out-dir,
+  --br-updates, --final-eval-games; None-sentinel BR defaults (lr 1e-4, ent 0.1 per the
+  reference compute_exploitability_rl.py). New collect_br_game (single-seat: BR via
+  act_collect tau=1, frozen target via sampled_agent, NO opp records) + run_br (alpha=0
+  forced, no rho reset). Reuses compute_gae/ppo_update/_build_minibatch UNCHANGED. Metric =
+  BR avg return curve (LOWER BOUND) + n>=200 seat-swapped BR-vs-target win%+Wilson CI, dumped
+  to <prefix>_result.json. The frozen target SAMPLES (tau=1) -- BR to its actual mixed policy.
+- LOCAL verify GREEN: plumbing smoke (finite loss, br_return in [-1,1], approx_kl~0.01 R4 ok);
+  CEILING vs nashpg_a0_init -> br_return rises 0->1.0 by update 3, final 79/1/0 = 98.8% (BR
+  CAN exploit a near-random target -- the calibration anchor). ~10-13 games/s steady (GPU).
+- Kaggle path (kaggle/, OUTSIDE the submission boundary): code+ckpt PRIVATE dataset
+  (nivald0/poketcg-nashpg-code-ckpts; FULL eval.py import closure -- the rule-based starters
+  open decks/<name>.csv + call all_card_data() AT IMPORT, so deck CSVs ship FLAT and run_br.py
+  rebuilds decks/ in a writable mirror); script-kernel run_br.py (defensive cg glob -> CG_LIB_PATH
+  -> runpy train_nashpg, --out-dir /kaggle/working); push_sweep.py driver (stage/sweep/status/
+  pull/report; report compares a0_final vs a02_final via NON-overlapping Wilson CIs).
+- KAGGLE SMOKE GREEN end-to-end: cg ships in the competition mount at
+  /kaggle/input/competitions/pokemon-tcg-ai-battle/sample_submission/sample_submission/cg
+  (R-KAG1 resolved -- no fallback upload needed); kernel ran in ~110s CPU, BR vs nashpg_a0_init
+  -> 193/7/0 = 96.5% (CI 93.0-98.3), matching the local 98.8% ceiling. ~2.75 games/s on Kaggle CPU
+  => a full 300-update kernel ~1h.
+- NOT YET RUN (awaiting go-ahead -- multi-hour quota): the real sweep. Re-stage all 4 targets
+  then `python kaggle/push_sweep.py sweep` (a0_final/a02_final/a0_init/a02_init x seeds 0-2) ->
+  status/pull/report. Headline = is a02_final LESS exploitable than a0_final (CIs separated)?

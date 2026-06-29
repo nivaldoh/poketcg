@@ -1,12 +1,12 @@
 # General instructions
 - Start with minimal code that can be verified, always aim for simplicity, avoid verbosity, avoid boilerplate and things like backwards-compatibility. We want to keep our code clean and readable. Code/repo changes should ideally be minimal, incremental/decremental and verifiable.
-- Be careful with assumptions, and always explicitly state any that you think you need to make. Point out any information that you think you might be missing, and I will help you find it and make key decisions.
+- Be careful with assumptions and overconfidence.
 - We should aim to structure the repo such that it makes it easier for you (Claude Code) to work with it.
 - Don't get overly attached to existing code. Refactor and rewrite freely if you see good opportunities to simplify things.
 - We should keep the work log lean and up-to-date so that we can properly keep track of what has been tried/done so far.
 
 # Roadmap
-- The active roadmap is the RL-first ladder (R1–R6) in [`plan.md`](plan.md). For evaluation strategy see [`EVAL.md`](EVAL.md); for the underlying methodology see [`docs/eval_info.md`](docs/eval_info.md).
+- The active roadmap is in [`plan.md`](plan.md). For evaluation strategy see [`EVAL.md`](EVAL.md); for the underlying methodology see [`docs/eval_info.md`](docs/eval_info.md).
 
 # Context
 
@@ -139,7 +139,7 @@ Key caveats (printed by the tool; from `docs/eval_info.md`):
 
 Two sources of training data. Only self-play is wired up today.
 
-## 1. Self-play (implemented)
+## 1. Self-play (implemented but needs to be updated)
 
 `starter_rl_kaggle.py` is a working RL+MCTS self-play trainer. Per iteration it:
 - runs the `battle_start → battle_select → battle_finish` loop;
