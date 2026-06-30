@@ -126,3 +126,28 @@ Work log (lean — what's been tried/done).
   exploration + convergence(plateau) check + multi BR-seed + ideally MCTS-BR; and multiple TARGET runs
   per alpha before any claim about the METHOD (n=1 target/arm is the deepest limit). Caveat: bare tau=1
   policy, NO MCTS -> bounds the bare network, not the deployed search agent ("MCTS provides the strength").
+
+2026-06-30 — Reorg: moved the 4 rule-based agents to game_agents/rulebased/, killed the Lucario dup.
+- WHY: the 4 rule-based opponents cluttered root AND were stored two inconsistent ways. Lucario was
+  DUPLICATED -- rulebased_lucario.py (clean importable) vs starter_rulebased_lucario_kaggle.py (raw
+  Kaggle export); `diff` proved them byte-identical in agent() logic, differing ONLY in glue
+  (%%writefile + tarfile - cg-path injection). The other 3 decks were single files with the glue
+  merely commented out and no cg-path injection.
+- MOVED (git mv, history preserved) + RENAMED to clean deck names:
+  rulebased_lucario.py -> game_agents/rulebased/lucario.py; starter_rulebased_{abomasnow,dragapult_ex,
+  iono}_kaggle.py -> game_agents/rulebased/{abomasnow,dragapult_ex,iono}.py. DELETED the redundant
+  starter_rulebased_lucario_kaggle.py (git rm; git history is the backup).
+- CONSISTENT TEMPLATE across all 4: cg-path injection (CG_LIB_PATH override, default ../../vendor/cg-lib);
+  deck resolution gains an ADDITIVE first candidate ../../decks/<name>.csv (kept the _here/decks one so
+  the Kaggle BR kernel, which rebuilds decks/ beside the flat module, still resolves); removed the dead
+  commented %%writefile/tarfile glue. agent()/heuristics UNCHANGED.
+- IMPORTERS updated to add game_agents/rulebased to sys.path then import by BARE name (matches the repo's
+  sys.path idiom AND the Kaggle flat-staging model -- package imports would break run_br.py). eval.py
+  (alias to old names so make_*/deck_hash/gauntlet untouched), eval_mymodel.py, starter_rl_kaggle.py,
+  kaggle/push_sweep.py CODE_FILES (copy2 still flattens to basename -> flat in dataset). Docs synced:
+  CLAUDE.md, README.md, kaggle-submission SKILL.md + pack_submission.py.
+- VERIFIED: standalone import of all 4 (no tcg_model pre-import) loads [60,60,60,60]; smoketest reaches a
+  terminal result; eval.py sanity battery runs clean (seat-swap 50.0%, lucario-vs-random 94.5%).
+- LEFT (out of scope): legacy_delete/train_reinforce.py still `import rulebased_lucario` (archived, never
+  runs). PRE-EXISTING (not from this change): push_sweep.py CODE_FILES lists root train_nashpg.py, but git
+  status shows it was moved to legacy_delete/ -- staging would already fail on it, independent of this reorg.

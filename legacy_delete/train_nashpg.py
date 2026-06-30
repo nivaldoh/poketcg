@@ -423,6 +423,7 @@ def main() -> int:
 
     # None-sentinel resolution: BR mode uses the reference recipe (lr 1e-4, ent 0.1); NASHPG keeps
     # its own (lr 3e-4, ent 0.01). An explicit CLI value always wins.
+    # Do we need all this separate stuff for best-response?
     if args.lr is None:
         args.lr = 1e-4 if args.br_vs else 3e-4
     if args.ent_coef is None:
@@ -434,6 +435,7 @@ def main() -> int:
     # Train AND eval on the same deck (sample_deck) so eval measures the trained policy on its
     # own deck. (plan.md's collection + eval both center on sample_deck; the "--deck deck.csv"
     # in its CLI line was a train_reinforce copy artifact. CSV override kept for flexibility.)
+    # TODO: eventually we will need to train on all the decks
     deck = sample_deck if args.deck is None else [int(x) for x in open(args.deck).read().split()]
 
     out_dir = args.out_dir
@@ -445,6 +447,7 @@ def main() -> int:
     model = MyModel(128, 2, 256, 1, 1).to(device)          # from-scratch unless --load (Kaggle resume)
     if args.load:
         load_state(model, args.load, device)
+    # TODO: eventually test different params
     ref = MyModel(128, 2, 256, 1, 1).to(device)            # rho: frozen reference policy
     ref.load_state_dict(model.state_dict())                # rho starts at theta (loaded or fresh)
     ref.eval()

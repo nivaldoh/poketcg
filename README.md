@@ -122,9 +122,10 @@ Description of the move effect or additional rule text.
 python eval.py                       # default sanity battery
 python eval.py --games 50            # more games per model matchup (tighter CIs)
 python eval.py --search-count 8      # deeper MCTS for the model (stronger, slower)
+python eval.py --mode gauntlet --checkpoint out/nashpg_a0_final.pth   # one ckpt vs frozen anchor + the 4 rule-based decks
 ```
 
-What it does (`eval.py`, built on `tcg_model.py` + `rulebased_lucario.py`):
+What it does (`eval.py`, built on `tcg_model.py` + `game_agents/rulebased/lucario.py`):
 - **Agents:** `random`, `rulebased` (Mega-Lucario, plays `deck.csv`), and any checkpoint (`MyModel` + `mcts_agent`, plays `sample_deck`). Defaults compare `out/mixed_final.pth` vs `out/model0.pth`.
 - **`play_match`** alternates seats every game (cancels first-player advantage) and routes each decision by `obs.current.yourIndex`.
 - **Reports** W/L/D, win% over *decisive* games with a **95% Wilson CI**, and a mean-anchored Bradley-Terry **Elo**. Cheap model-free matchups run with `--baseline-games` (default 200) for tight CIs; model matchups use `--games`.
@@ -132,6 +133,8 @@ What it does (`eval.py`, built on `tcg_model.py` + `rulebased_lucario.py`):
 Key caveats (printed by the tool; from `docs/eval_info.md`):
 - **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.
 - **High outcome variance** → wide CIs at small n; raise `--games`. Win% excludes draws (reported separately).
+
+**Current standing (2026-06-29, `--mode gauntlet`, n=200, MCTS search-count 4):** our trained checkpoints **lose to all four rule-based agents** — Lucario / Abomasnow / Dragapult / Iono, win rates only **4–34%**, including the least deck-confounded *near-mirror* vs Abomasnow (`sample_deck` ≈ the Abomasnow archetype) — so the hand-written heuristics are still clearly ahead, and the loss is a genuine skill gap, not just the deck matchup. On the clean *skill* axis (mirror vs the frozen `model0` anchor), the NashPG finals (`nashpg_a0_final`, `nashpg_a02_final`) **do beat** the untrained init (~60–61%, CIs exclude 50%) and are statistically indistinguishable from each other, while the older `mixed_final` *regressed* below it (39.5%). Net: NashPG self-play improves over the init but the policy is still weak in absolute terms.
 
 **Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `docs/eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `docs/eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
 
@@ -156,7 +159,7 @@ python starter_rl_kaggle.py --iterations 2 --eval-games 2 \
 ```
 Prints per-iteration `samples=… batches=… mean_loss=…` and eval win-rate vs **both** a random opponent and the rule-based agent. Gotcha: the default `--batch-size` is 128, so a handful of self-play games produces no full batch (`batch_count = samples // batch_size == 0`) and thus *no* gradient step — hence the small `--batch-size` for smoke runs. No args = heavy Kaggle defaults (5 iters, 50 eval / 100 self-play games, search 10, batch 128).
 
-**Opponents:** self-play also faces the rule-based Mega-Lucario agent (importable port: `rulebased_lucario.py`) for a fraction of games set by `--rb-frac` (default 0.5; the learner plays `sample_deck`, the opponent plays the Lucario `deck.csv`). Continue an existing checkpoint with `--load out/<ckpt>.pth`, name checkpoints with `--out-prefix`, and the fully-trained model is saved to `out/<prefix>_final.pth` (the per-iteration `out/<prefix>N.pth` are saved *before* each iteration's training). Example "train further" run:
+**Opponents:** self-play also faces the rule-based Mega-Lucario agent (importable port: `game_agents/rulebased/lucario.py`) for a fraction of games set by `--rb-frac` (default 0.5; the learner plays `sample_deck`, the opponent plays the Lucario `deck.csv`). Continue an existing checkpoint with `--load out/<ckpt>.pth`, name checkpoints with `--out-prefix`, and the fully-trained model is saved to `out/<prefix>_final.pth` (the per-iteration `out/<prefix>N.pth` are saved *before* each iteration's training). Example "train further" run:
 ```bash
 python starter_rl_kaggle.py --load out/model1.pth --out-prefix mixed \
     --iterations 3 --eval-games 6 --selfplay-games 20 --search-count 8 --batch-size 32
@@ -178,6 +181,15 @@ A replay is a Kaggle episode JSON: `rewards` (final result, e.g. `[1,-1]`) + `st
 Already fetched locally (all under gitignored `data/`): a sample replay `data/replays/episode-81475913-replay.json` (top team, 1 game) and the card-metadata `data/EN_Card_Data.csv` / `data/JP_Card_Data.csv` (the matching ID-list PDFs are ~320 MB and were skipped; both CSVs and PDFs are attached to `pokemon-tcg-ai-battle` and the strategy track).
 
 **Open decision:** build the replay → BC/IL parser next, or push further on self-play first.
+
+# Running heavy jobs on Kaggle (operational lessons)
+
+Local hardware is small (WSL2), so heavy training/eval is offloaded to Kaggle script-kernels (infra: `kaggle/push_sweep.py`). Lessons from the NashPG BR-exploitability sweep (`nashpg_br_sweep_report.md`):
+
+- **Concurrency cap:** Kaggle runs at most **5 concurrent batch CPU sessions**. We pushed 12 kernels at once; the extra 7 were rejected with a session-cap error. **Push in waves of ≤5** and plan the matrix around that cap rather than firing everything at once.
+- **Zombie kernels:** rejected/failed pushes can leave **empty "zombie" kernel records**; re-pushing to those same slugs then fails with a misleading `Notebook not found`. **Use a distinct slug per job** so a failed push doesn't poison the slug.
+- **No CLI delete:** the Kaggle CLI has **no `kernels delete`** — zombie/partial kernels must be removed via the **web UI**.
+- **Throughput:** each CPU kernel ran **~1–1.5 h**; results pull back via the CLI into `kaggle/out_kaggle/`. Net effect of the above: only **6 of 12** kernels completed that sweep.
 
 # How to Submit to this Competition (only do this when explicitly asked)
 See kaggle-submission skill.

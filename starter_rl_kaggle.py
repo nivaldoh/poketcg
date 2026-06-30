@@ -12,7 +12,7 @@ import torch.nn
 import torch.optim
 
 # Local run: vendored `cg` simulator under vendor/cg-lib/ (see README/CLAUDE.md);
-# override with CG_LIB_PATH. Self-contained, mirroring run_battle.py.
+# override with CG_LIB_PATH. Self-contained, mirroring utils/run_smoketest_battle.py.
 _CG_LIB_PATH = os.environ.get(
     "CG_LIB_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "cg-lib"),
@@ -33,8 +33,10 @@ from tcg_model import (
     progress,
 )
 
-# The rule-based Mega-Lucario agent: a second training/eval opponent.
-from rulebased_lucario import agent as rulebased_agent, my_deck as lucario_deck
+# The rule-based Mega-Lucario agent: a second training/eval opponent. It lives in
+# game_agents/rulebased/ now, so add that dir to sys.path before importing it by bare name.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_agents", "rulebased"))
+from lucario import agent as rulebased_agent, my_deck as lucario_deck
 
 # Loop sizes are CLI-tunable so the training loop can run a tiny local smoke
 # pass (e.g. --iterations 1 --eval-games 2 --selfplay-games 2 --search-count 2)

@@ -215,7 +215,7 @@ class RolloutBuffer:
                     self.state_values, self.rewards, self.is_terminals):
             del lst[:]
 
-
+# TODO: probably we should move PPO-related code into a separate module(s) so train_ppo.py is just the driver loop.
 # ============================================================================================
 # PPO — fresh; mirrors the reference's PPO class (select_action / update / save / load).
 # ============================================================================================
@@ -230,7 +230,7 @@ class PPO:
         self.ent_coef = ent_coef
         self.policy = ActorCritic(state_dim, option_dim).to(device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
-        self.buffer = RolloutBuffer()
+        self.buffer = RolloutBuffer() # TODO: is this where we could eventually add GAE as an alternative? Would that be an isolated change?
 
     def select_action(self, obs_dict):
         """Drive ONE decision. Returns (selection_list, recorded: bool). Single-select policy
@@ -309,6 +309,7 @@ class PPO:
 # cg ENGINE PLUMBING — the salvaged interaction. Drives battles, collects the PPO seat's
 # trajectory into the buffer, and writes the terminal reward.
 # ============================================================================================
+# TODO: maybe this is where we could later add a battle visualizer?
 def collect_games(ppo, opp_fn, deck, n_games):
     """Play `n_games` vs a FIXED opponent, appending the PPO seat's learned decisions to
     ppo.buffer. Returns the per-game seat-relative result G (for win-rate logging).
@@ -327,6 +328,7 @@ def collect_games(ppo, opp_fn, deck, n_games):
             while obs["current"]["result"] < 0:
                 yi = obs["current"]["yourIndex"]
                 if yi == ppo_seat:
+                    # TODO: PPO taking actions one-by-one? If we had multi-select, probably we would have to collect the whole multi-select decision here.
                     sel, recorded = ppo.select_action(obs)
                     recorded_any = recorded_any or recorded
                 else:
@@ -386,7 +388,7 @@ def train(args):
 
     for it in range(1, args.updates + 1):
         results = collect_games(ppo, opp_fn, deck, args.games_per_update)
-        stats = ppo.update()                   # STUB today — fills in at roadmap step 3
+        stats = ppo.update()
         wins = sum(1 for G in results if G > 0)
         n = len(results)
         print(f"[update {it}/{args.updates}] games={n} winrate={wins / n:.3f} "

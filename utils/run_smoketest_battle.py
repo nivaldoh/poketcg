@@ -10,9 +10,9 @@ The `cg` SDK is proprietary and not committed to the repo (see .gitignore). It
 lives under vendor/cg-lib/ after being downloaded from the Kaggle competition
 `pokemon-tcg-ai-battle`. Override its location with the CG_LIB_PATH env var.
 
-Usage:
-    python run_battle.py            # one battle
-    python run_battle.py --games 5  # five battles, prints a win/loss/draw tally
+Usage (run from the repo root):
+    python utils/run_smoketest_battle.py            # one battle
+    python utils/run_smoketest_battle.py --games 5  # five battles, prints a win/loss/draw tally
 """
 
 import argparse
@@ -20,11 +20,14 @@ import os
 import random
 import sys
 
+# This script lives in utils/; defaults (vendor dir, deck.csv) are anchored to
+# the repo root, one level up, so they resolve no matter the working directory.
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
 
 # Replace the Kaggle `glob('/kaggle/input/**/cg-lib')` path injection with a
 # local vendor dir (overridable), then import the simulator.
-CG_LIB_PATH = os.environ.get("CG_LIB_PATH", os.path.join(HERE, "vendor", "cg-lib"))
+CG_LIB_PATH = os.environ.get("CG_LIB_PATH", os.path.join(REPO_ROOT, "vendor", "cg-lib"))
 sys.path.insert(0, CG_LIB_PATH)
 
 try:
@@ -84,7 +87,7 @@ def main() -> int:
     parser.add_argument("--games", type=int, default=1, help="number of battles to play")
     parser.add_argument(
         "--deck",
-        default=os.path.join(HERE, "deck.csv"),
+        default=os.path.join(REPO_ROOT, "deck.csv"),
         help="path to a 60-card deck CSV (used for both players)",
     )
     parser.add_argument("--seed", type=int, default=0, help="RNG seed for the agents")

@@ -5,10 +5,16 @@
 # The main attacker, Iono’s Voltorb, is a regular Pokémon card (not ex and not Mega), which means that even if it gets Knocked Out, your opponent only takes 1 Prize card.
 # In addition, the deck can refill its hand with Iono’s Kilowattrel’s Ability, Flashing Draw, and it is also designed to quickly set up Lightning Pokémon by using the Supporter card Canari.
 
-# %%writefile main.py
 import os
 import sys
 from collections import defaultdict
+
+
+# Local run: make the vendored `cg` simulator importable. Override with CG_LIB_PATH
+# (the Kaggle BR kernel sets it). Repo root is two levels up from this file.
+sys.path.insert(0, os.environ.get(
+    "CG_LIB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "vendor", "cg-lib")))
 
 from cg.api import AreaType, CardType, Observation, SelectContext, OptionType, Card, Pokemon, all_card_data, to_observation_class
 
@@ -22,7 +28,8 @@ This deck aims to load up your Pokémon with as much Energy as possible to unlea
 # Kaggle-packaged deck.csv (beside main.py) at submission time.
 _here = os.path.dirname(os.path.abspath(__file__))
 file_path = "deck.csv"
-for _cand in (os.path.join(_here, "decks", "iono.csv"), "deck.csv",
+for _cand in (os.path.join(_here, "..", "..", "decks", "iono.csv"),
+              os.path.join(_here, "decks", "iono.csv"), "deck.csv",
               "/kaggle_simulations/agent/deck.csv"):
     if os.path.exists(_cand):
         file_path = _cand
@@ -428,14 +435,5 @@ def agent(obs_dict: dict) -> list[int]:
     # Select in descending order of score
     desc_indices = [i for i, _ in sorted(enumerate(scores), key=lambda x: x[1], reverse=True)]
     return desc_indices[:select.maxCount]
-
-# import glob
-# import os
-# import tarfile
-
-# with tarfile.open("submission.tar.gz", "w:gz") as tar:
-#     tar.add("main.py", arcname="main.py")
-#     tar.add(glob.glob('/kaggle/input/**/cg-lib/cg', recursive=True)[0], arcname="cg")
-#     tar.add(glob.glob('/kaggle/input/**/iono-deck/deck.csv', recursive=True)[0], arcname="deck.csv")
 
 # os.remove('main.py')
