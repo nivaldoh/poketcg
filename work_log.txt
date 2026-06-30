@@ -151,3 +151,21 @@ Work log (lean — what's been tried/done).
 - LEFT (out of scope): legacy_delete/train_reinforce.py still `import rulebased_lucario` (archived, never
   runs). PRE-EXISTING (not from this change): push_sweep.py CODE_FILES lists root train_nashpg.py, but git
   status shows it was moved to legacy_delete/ -- staging would already fail on it, independent of this reorg.
+
+2026-06-30 — Refactor: split train_ppo.py into a reusable layer (ppo_model.py) + the driver.
+- WHY: train_ppo.py (437 lines) bundled the PPO implementation with the training loop; hard to scan.
+  It even carried an inline TODO asking for exactly this move. Mirrors the repo's tcg_model.py<->trainer
+  pattern (reusable layer extracted so tools import it without launching training); flat module, no package.
+- NEW ppo_model.py: STATE_DIM/OPTION_DIM/HIDDEN, encode_state/encode_options, ActOutput/ActorCritic,
+  RolloutBuffer, PPO (select_action/_collate/update/save/load) — moved VERBATIM (verified byte-identical
+  vs HEAD; only diff is the dropped, now-resolved inline TODO + one PEP8 blank line). Implementation-design
+  docstring relocated here. Imports eval_mymodel BEFORE cg.api (eval_mymodel pulls tcg_model -> wires
+  CG_LIB_PATH); dropped the unused OptionType import.
+- train_ppo.py now the DRIVER only (~170 lines): collect_games, make_opponent, train, main, roadmap.
+  Imports `from ppo_model import PPO, STATE_DIM, OPTION_DIM`; keeps eval_mymodel/cg.api imports for the
+  frozen-opponent branch. No behavior change (stubs still raise; skeleton stage unchanged).
+- _collate KEPT (user asked "reason to exist?"): yes — it's load-bearing for PPO.update (step 4 collates
+  the ragged buffer into the padded [B,W,OPTION_DIM]+mask batch that ActorCritic.evaluate consumes), and
+  being separate keeps the padding/masking independently checkable before update() is filled in.
+- VERIFIED: `import ppo_model` OK; all moved symbols importable; `python train_ppo.py --help` builds;
+  git diff shows train_ppo -306 lines, ppo_model.py new. Nothing else imports train_ppo (pure leaf).
