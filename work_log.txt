@@ -99,3 +99,30 @@ Work log (lean — what's been tried/done).
 - NOT YET RUN (awaiting go-ahead -- multi-hour quota): the real sweep. Re-stage all 4 targets
   then `python kaggle/push_sweep.py sweep` (a0_final/a02_final/a0_init/a02_init x seeds 0-2) ->
   status/pull/report. Headline = is a02_final LESS exploitable than a0_final (CIs separated)?
+
+2026-06-29 -- RAN the BR-exploitability sweep on Kaggle. Full report: nashpg_br_sweep_report.md.
+- INFRA: Kaggle caps CONCURRENT batch CPU sessions at 5. Pushing 12 -> 5 ran, other 7 hit the cap;
+  the cap-failed pushes left 6 ZOMBIE kernel records (empty "[Private Notebook]"), and re-pushing
+  those slugs then fails "Notebook not found". Only 6/12 completed (a0_final x3, a02_final x{0,1},
+  a0_init x0 re-pushed at real 300-upd config). Stopped by user decision (missing 6 wouldn't change
+  the conclusion). FIX for next time: push in waves of <=5, or use fresh slugs to dodge zombies.
+  6 zombie kernels remain on Kaggle -> delete via web UI (CLI has no kernels-delete).
+- RESULT (n=200 seat-swapped each; pooled): a0_init ceiling 200/0=100% (BR procedure works);
+  a02_final 236/400=59.0% (CI 54.1-63.7, EXCLUDES 50%) -> a02_final IS exploitable, valid one-sided
+  lower bound >=+0.08 pooled (+0.02-0.06/seed); a0_final 249/600=41.5% (CI 37.6-45.5, BELOW 50%) with
+  NEGATIVE training plateau (-0.16..-0.19) -> the from-scratch 300-upd BR UNDER-CONVERGED vs a0_final
+  (a converged BR can't avg <0 in a value-0 mirror; seat-balance verified in BOTH collect_br_game and
+  play_match). So a0_final expl_lb=0 is UNINFORMATIVE, not "unexploitable".
+- VERDICT: headline (does alpha=0.2 lower exploitability?) is UNANSWERABLE in either direction. a0's
+  leg is unmeasured (under-converged BR) AND confounded by absolute strength (a0_final BEATS a02_final
+  head-to-head 233/167; a from-scratch BR-vs-a0 41.5% ~= a02-vs-a0 41.8% -> BR only reached generic
+  competence, found no exploit). Face-value "a02 more exploitable" is INVALID (a0 unmeasured) -> do
+  NOT claim the sweep refutes the KL anchor. Honest: a0_final exploitability UNRESOLVED (under-converged
+  BR vs genuinely-robust are observationally identical here).
+- Conclusions adversarially verified (7-agent refute+synthesize workflow); it caught + corrected real
+  overclaims (dropped "BR under-powered for TRAINED targets" -- a02 IS trained and WAS exploited;
+  fixed an invalid ">=+0.1" floor; softened "unanswerable"; warm-start fix = NECESSARY not SUFFICIENT).
+- NEXT (for a valid test): WARM-START BR from target weights (starts at ~50% mirror baseline) + entropy/
+  exploration + convergence(plateau) check + multi BR-seed + ideally MCTS-BR; and multiple TARGET runs
+  per alpha before any claim about the METHOD (n=1 target/arm is the deepest limit). Caveat: bare tau=1
+  policy, NO MCTS -> bounds the bare network, not the deployed search agent ("MCTS provides the strength").
