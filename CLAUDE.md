@@ -16,40 +16,25 @@ Environment: Python 3.13 (miniconda), `torch` 2.8 (CUDA available).
 
 The SDK path is wired via `CG_LIB_PATH` (default `vendor/cg-lib`), replacing the Kaggle `glob('/kaggle/input/**/cg-lib')` injection.
 
-```bash
-# End-to-end battle smoke test (random vs random); asserts a terminal result.
-python run_battle.py [--games N]
-
-# RL+MCTS training. No args = original (heavy) Kaggle config; small numbers = fast
-# smoke pass. Writes checkpoints to out/modelN.pth.
-python starter_rl_kaggle.py --iterations 1 --eval-games 2 --selfplay-games 2 --search-count 2
-
-# Stage-1 eval harness (our PRIMARY model-performance signal): head-to-head win
-# rates with 95% Wilson CIs + a rough Elo. Default = a sanity battery of
-# random / rule-based / checkpoint matchups (seat-swapped).
-python eval.py --games 30 --search-count 6
-```
-
-No test framework yet; `run_battle.py` is the smallest verifiable signal the engine runs, and `eval.py` is the primary way to compare agents/checkpoints. `vendor/`, and `out/` are gitignored.
+No test framework yet. `vendor/`, and `out/` are gitignored.
 
 ## Modules
 
 - `tcg_model.py` — the **reusable model/agent layer**, extracted from the trainer so tools can import it without launching training: `MyModel` (Transformer: encoder = value, decoder = policy), the sparse encoder/decoder feature builders, `mcts_agent`, `random_agent`, and `sample_deck`.
 - `eval.py` — (see README "Eval harness").
+- `game_agents/rulebased/<deck>.py` — the heuristic agents, **one clean importable module per deck**: `lucario` (Mega Lucario ex), `abomasnow` (Mega Abomasnow ex), `dragapult_ex`, `iono` (Iono's Bellibolt/Voltorb). The reusable part of each is `agent()` and its scoring heuristics; each also exposes `my_deck` (its 60-card list). `eval.py` / `starter_rl_kaggle.py` add `game_agents/rulebased/` to `sys.path` and import them by bare name.
 
 ## The starter files
 
-These are **Kaggle-notebook exports, not plain modules** (they open with `%%writefile main.py` and end by building `submission.tar.gz`):
-- `starter_rl_kaggle.py` — RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports.
-- `starter_rulebased_<deck>_kaggle.py` — heuristic agents, one per deck: **lucario** (Mega Lucario ex), **abomasnow** (Mega Abomasnow ex), **dragapult_ex**, **iono** (Iono's Bellibolt/Voltorb). The reusable part of each is `agent()` and its scoring heuristics.
+`starter_rl_kaggle.py` is a **Kaggle-notebook export, not a plain module** (it opens with `%%writefile main.py` and ends by building `submission.tar.gz`): RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports.
 
-Each rule-based agent loads its own 60-card deck from `decks/<name>.csv` (committed; generated from the agent's decklist constants), falling back to `deck.csv` then the Kaggle `/kaggle_simulations/agent/deck.csv` at submission time. Root `deck.csv` (gitignored, = the Lucario list, mirrors `decks/lucario.csv`) stays the learner-side default for the training/eval scripts.
+Each rule-based agent (`game_agents/rulebased/<deck>.py`) loads its own 60-card deck from `decks/<name>.csv` (committed; the repo-root `decks/` is two levels up from the module), falling back to `deck.csv` then the Kaggle `/kaggle_simulations/agent/deck.csv` at submission time. Root `deck.csv` (gitignored, = the Lucario list, mirrors `decks/lucario.csv`) stays the learner-side default for the training/eval scripts.
 
-Kaggle-specific glue to strip when porting one of the rule-based starters: the `glob('/kaggle/input/...')` path injection, `%%writefile`, and `tarfile` packaging.
+Kaggle-specific glue to strip when porting `starter_rl_kaggle.py` (or a fresh Kaggle rule-based export) to a local module: the `glob('/kaggle/input/...')` path injection, `%%writefile`, and `tarfile` packaging. (The four rule-based agents have already been cleaned this way.)
 
 ## Architecture & API
 
-The agent contract is one function: `agent(obs_dict) -> list[int]` returning **option indices** into `obs.select.option` (length in `[minCount, maxCount]`, no dupes); on the first call `obs.select is None` and it must return a 60-card deck instead. Battles run via `battle_start` → `battle_select` → `battle_finish` (see `run_battle.py`); MCTS uses a determinizing Search API to handle hidden opponent cards.
+The agent contract is one function: `agent(obs_dict) -> list[int]` returning **option indices** into `obs.select.option` (length in `[minCount, maxCount]`, no dupes); on the first call `obs.select is None` and it must return a 60-card deck instead. Battles run via `battle_start` → `battle_select` → `battle_finish` (see `utils/run_smoketest_battle.py`); MCTS uses a determinizing Search API to handle hidden opponent cards.
 
 Full reference — observation/option/card model, driver loop, Search API & MCTS internals — is in **`docs/cg-sdk.md`** (ground truth from the vendored source).
 

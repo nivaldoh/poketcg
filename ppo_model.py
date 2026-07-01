@@ -75,10 +75,7 @@ N_SELECT_TYPES = max(s.value for s in SelectType) + 1        # 11
 N_SPECIAL_COND = max(s.value for s in SpecialConditionType) + 1  # 5
 
 BENCH_SLOTS = 5             # engine benchMax is 5; we lay out 5 explicit (order-sensitive) slots
-HIDDEN = 64                 # reference uses 64-wide Tanh MLPs
-# NOTE (tuning, non-blocking): with the max-detail state (~300 dense dims + embeddings) the first
-# value/scorer layer compresses hard into HIDDEN=64. Bumping HIDDEN is a reasonable follow-up.
-
+HIDDEN = 256
 # Learned id-embeddings. Sentinel row per table (padding_idx) = a zero vector w/ zero gradient,
 # used for empty board slots and padded option rows. Valid ids are [0, card_count-1] /
 # [0, attack_count-1]; the sentinel is the extra row at index card_count / attack_count.

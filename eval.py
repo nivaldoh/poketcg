@@ -27,6 +27,7 @@ import math
 import os
 import random
 import subprocess
+import sys
 
 import torch
 
@@ -35,14 +36,15 @@ import torch
 import tcg_model
 from tcg_model import MyModel, mcts_agent, random_agent, sample_deck
 from cg.game import battle_start, battle_select, battle_finish
-import rulebased_lucario
-# The 3 newer rule-based decks are still Kaggle-form exports (%%writefile/tarfile commented out),
-# importable as plain modules now that `cg` is on sys.path. They expose `agent` + `my_deck` like
-# rulebased_lucario, and reset their per-game state on the first call (see each file's obs.select-None
-# / turn-0 handling) so reuse across the gauntlet's many games is clean.
-import starter_rulebased_abomasnow_kaggle as rb_abomasnow
-import starter_rulebased_dragapult_ex_kaggle as rb_dragapult
-import starter_rulebased_iono_kaggle as rb_iono
+# The rule-based agents live in game_agents/rulebased/ as flat modules; add that dir to sys.path so
+# they import by bare name here AND on Kaggle (push_sweep.py stages them flat in the BR dataset).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_agents", "rulebased"))
+import lucario as rulebased_lucario
+# Each deck is one clean module exposing `agent` + `my_deck`; they reset their per-game state on the
+# first call (see each file's obs.select-None / turn-0 handling) so reuse across the gauntlet is clean.
+import abomasnow as rb_abomasnow
+import dragapult_ex as rb_dragapult
+import iono as rb_iono
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

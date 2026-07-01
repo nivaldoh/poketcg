@@ -20,6 +20,7 @@ import torch
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, os.path.join(_REPO_ROOT, "game_agents", "rulebased"))
 
 import tcg_model  # noqa: E402
 from tcg_model import (  # noqa: E402
@@ -27,7 +28,7 @@ from tcg_model import (  # noqa: E402
 )
 from cg.api import OptionType, to_observation_class  # noqa: E402
 from cg.game import battle_start, battle_select, battle_finish  # noqa: E402
-import rulebased_lucario  # noqa: E402
+import lucario as rulebased_lucario  # noqa: E402
 from eval import wilson  # noqa: E402
 
 
