@@ -128,11 +128,12 @@ def train(args):
 
     for it in range(1, args.updates + 1):
         results = collect_games(ppo, opp_fn, deck, args.games_per_update)
+        n_samples = len(ppo.buffer)                # capture before update() clears the buffer
         stats = ppo.update()
         wins = sum(1 for G in results if G > 0)
         n = len(results)
         print(f"[update {it}/{args.updates}] games={n} winrate={wins / n:.3f} "
-              f"buffer={len(ppo.buffer)} loss={stats.get('loss') if stats else 'n/a'}")
+              f"samples={n_samples} loss={stats.get('loss') if stats else 'n/a'}")
         if it % args.save_every == 0:
             ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}{it}.pth"))
     ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}_final.pth"))
