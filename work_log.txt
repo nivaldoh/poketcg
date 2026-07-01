@@ -169,3 +169,14 @@ Work log (lean — what's been tried/done).
   being separate keeps the padding/masking independently checkable before update() is filled in.
 - VERIFIED: `import ppo_model` OK; all moved symbols importable; `python train_ppo.py --help` builds;
   git diff shows train_ppo -306 lines, ppo_model.py new. Nothing else imports train_ppo (pure leaf).
+
+2026-06-30 — Documented the PPO encoder stubs (comments only, NO implementation).
+- Added a HIGH-LEVEL comment block inside each of encode_state / encode_options in ppo_model.py,
+  between the docstring and the `raise`. No code/behavior change — both still raise NotImplementedError.
+- encode_state: simplest = a fixed-length normalized "dashboard" of scalars (perspective-relative
+  me-before-opp; prize DIFFERENTIAL is the key signal), NOT tcg_model's EmbeddingBag card vocab.
+- encode_options (chose the RAW-fields variant): one row per legal option = one-hot(OptionType) + a
+  few raw Option fields normalized (no card-table lookups). Notes row-order==option-index, per-option
+  independent scoring + downstream pad/mask, and the same-type-collision discriminability caveat.
+- VERIFIED: `python train_ppo.py --help` still builds. Design rationale + worked example captured in
+  plan ~/.claude/plans/help-me-figure-out-tingly-kitten.md.

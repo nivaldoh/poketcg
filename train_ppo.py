@@ -77,9 +77,14 @@ def collect_games(ppo, opp_fn, deck, n_games):
         finally:
             battle_finish()
         result = obs["current"]["result"]
+        # G ∈ {+1 win, -1 loss, 0 draw}, seat-relative. RISK (draw): a drawn game's whole episode is
+        # all-zero returns, which after advantage-normalization reads as a small NEGATIVE advantage in
+        # a win-heavy batch — a minor spurious penalty on draws. Rare; accepted for v1.
         G = 0.0 if result == 2 else (1.0 if result == ppo_seat else -1.0)
-        # Terminal-only reward: the PPO seat's records this game are the tail of the buffer
-        # (the opponent never appends), so buffer[-1] is this game's last learned decision.
+        # Terminal-only reward: the PPO seat's records this game are the tail of the buffer (the
+        # opponent never appends), so buffer[-1] is this game's last learned decision.
+        # COARSE CREDIT (accepted v1): G is attributed to the last POLICY-SELECT, which may precede the
+        # real game end by several auto-resolved / opponent steps — no per-step reward shaping.
         if recorded_any:
             ppo.buffer.rewards[-1] = G
             ppo.buffer.is_terminals[-1] = True
@@ -90,20 +95,28 @@ def collect_games(ppo, opp_fn, deck, n_games):
 # ============================================================================================
 # OPPONENTS — fixed (stationary) opponent factory for v1.
 # ============================================================================================
+def policy_agent(net, greedy=False):
+    """Wrap a (trained / frozen) ActorCritic as an agent_fn(obs_dict) -> list[int]: SAMPLE (or argmax
+    if greedy) on single-select policy nodes, auto_resolve everything else — the SAME decision routing
+    the PPO seat uses at collection time. Shared by make_opponent('frozen') and eval_ppo.py so the
+    frozen-opponent, trained-agent, and eval wrappers can never drift apart."""
+    def agent_fn(obs_dict):
+        o = to_observation_class(obs_dict)
+        sel = o.select
+        if not is_policy_select(sel):
+            return auto_resolve(sel)
+        with torch.no_grad():
+            return [net.act_index(o, greedy=greedy)]
+    return agent_fn
+
+
 def make_opponent(kind, ppo, device):
     """Return an opp_fn(obs_dict) -> list[int] for the non-PPO seat. v1 default: random."""
     if kind == "random":
         return random_agent
     if kind == "frozen":
         snapshot = copy.deepcopy(ppo.policy).to(device).eval()
-        def opp(obs_dict):
-            o = to_observation_class(obs_dict)
-            sel = o.select
-            if not is_policy_select(sel):
-                return auto_resolve(sel)
-            with torch.no_grad():
-                return [snapshot.act(o).action]
-        return opp
+        return policy_agent(snapshot, greedy=False)   # samples, exactly like the old inline opp()
     if kind == "rulebased":
         # The rule-based agents are hardcoded to their own (e.g. Lucario) deck, so a rule-based
         # opponent in our same-deck mirror would be deck-confounded — out of v1 scope. When we
@@ -125,6 +138,11 @@ def train(args):
               args.vf_coef, args.ent_coef, device)
     opp_fn = make_opponent(args.opponent, ppo, device)
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # Save the UNTRAINED net first so eval_ppo.py can anchor "did training help?" against the fresh-net
+    # baseline. That baseline is NOT ~50% vs random: a fresh net still uses the real auto_resolve
+    # heuristic on all non-policy nodes, so it starts with an edge — the success test is beating IT.
+    ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}_init.pth"))
 
     for it in range(1, args.updates + 1):
         results = collect_games(ppo, opp_fn, deck, args.games_per_update)

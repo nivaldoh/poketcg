@@ -114,6 +114,9 @@ N_OPT_ATTACK_SLOTS = 1                                        # [attackId]
 
 # ============================================================================================
 # Featurization helpers (small, dense, None-safe). All normalize to ~[0,1].
+# NOTE: this is STATIC hand-scaling (fixed divisors), NOT a running observation mean/std normalizer.
+# The ICLR "37 details" flags running obs-normalization as "very helpful"; we rely on hand-picked
+# scales instead — simpler, no running-stats state, but the divisors are only approximately right.
 # ============================================================================================
 def _onehot(idx, n):
     v = [0.0] * n
@@ -411,11 +414,18 @@ class ActorCritic(nn.Module):
         # the embeddings only add specialization on top. (Accepted tradeoff of the id-embedding fork.)
         self.card_emb = nn.Embedding(card_count + 1, d_card, padding_idx=CARD_PAD)
         self.attack_emb = nn.Embedding(attack_count + 1, d_attack, padding_idx=ATTACK_PAD)
+        # COUPLING NOTE: card_emb is SHARED by both heads (value_head via _state_repr, policy_scorer
+        # via _option_repr). The two MLPs are otherwise separate, but value-head gradient still flows
+        # into the policy's card table — the value objective isn't perfectly quarantined from the
+        # policy. Accepted for v1 (shared card knowledge is a feature); flagged so it's not a surprise.
 
         state_repr_dim = state_dim + N_STATE_SLOTS * d_card
         option_repr_dim = option_dim + N_OPT_CARD_SLOTS * d_card + N_OPT_ATTACK_SLOTS * d_attack
 
-        # Value head: V(s) ∈ [-1, 1] (terminal reward is ±1, so a tanh output is well-matched).
+        # Value head: V(s) ∈ [-1, 1] via a final tanh — well-matched to the RAW MC returns
+        # (γ^k·(±1) ∈ [-1,1]) that PPO.update targets. LOAD-BEARING coupling: this works ONLY because
+        # update() keeps returns UN-normalized (see update() step 2). If you re-introduce return
+        # z-scoring, targets exceed ±1 and this tanh saturates — drop the final tanh in that case.
         self.value_head = nn.Sequential(
             nn.Linear(state_repr_dim, hidden), nn.Tanh(),
             nn.Linear(hidden, hidden), nn.Tanh(),
@@ -473,6 +483,21 @@ class ActorCritic(nn.Module):
             dense_state.detach(), state_ids,
             dense_opt.detach(), opt_card_ids, opt_attack_ids,
         )
+
+    def act_index(self, o, greedy=False) -> int:
+        """Eval-time action selection for ONE single-select node: return just the chosen option
+        index (no buffer bookkeeping / logprob / value). Reuses the SAME featurize→score path as
+        act(), so greedy=False is identical to act()'s sampling. greedy=True takes the argmax logit.
+        Caller wraps in no_grad."""
+        dev = self.card_emb.weight.device
+        dense_state, state_ids = encode_state(o)
+        dense_opt, opt_card_ids, opt_attack_ids = encode_options(o)
+        state_repr = self._state_repr(dense_state.to(dev), state_ids.to(dev))
+        option_repr = self._option_repr(dense_opt.to(dev), opt_card_ids.to(dev), opt_attack_ids.to(dev))
+        logits = self._score(state_repr, option_repr)
+        if greedy:
+            return int(torch.argmax(logits).item())
+        return int(Categorical(logits=logits).sample().item())
 
     def evaluate(self, dense_state_b, state_ids_b, dense_opt_b, opt_card_ids_b, opt_attack_ids_b,
                  mask, actions):
@@ -551,6 +576,9 @@ class PPO:
         self.vf_coef = vf_coef
         self.ent_coef = ent_coef
         self.policy = ActorCritic(state_dim, option_dim).to(device)
+        # Single Adam/LR over ALL params (actor + critic + shared embeddings). The reference uses
+        # separate lr_actor/lr_critic; folding them into one LR means the critic can't be tuned to a
+        # different pace than the policy. Acceptable v1 simplification.
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
         self.buffer = RolloutBuffer()   # GAE could later slot in behind this + update()
 
@@ -596,9 +624,10 @@ class PPO:
     def update(self):
         """One PPO update on the collected buffer: Monte-Carlo returns → clipped-surrogate policy
         loss + value MSE + entropy bonus, K epochs of full-batch gradient ascent. Clears the
-        buffer and returns a diagnostics dict. Mirrors PPO-PyTorch/PPO.py (MC returns, RETURN
-        normalization, advantage = returns − V_old); GAE / minibatching / value-clipping are
-        future drop-ins behind this same interface.
+        buffer and returns a diagnostics dict. Mirrors PPO-PyTorch/PPO.py (MC returns, clipped
+        surrogate, advantage = returns − V_old) EXCEPT we normalize the ADVANTAGES, not the raw
+        RETURNS the reference z-scores (deliberate, tied to our tanh value head — see step 2); GAE /
+        minibatching / value-clipping are future drop-ins behind this same interface.
 
         NO separate `policy_old` net (load-bearing): old_logp / V_old were captured at ACT time
         and stored in the buffer (select_action → act). `policy.evaluate` re-scores the STORED
@@ -621,16 +650,30 @@ class PPO:
             R = r + self.gamma * R
             returns.insert(0, R)
         returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        # 2. Normalize the RETURNS (the value target), matching the reference. The +1e-7 guards a
-        #    zero-variance batch — but note an all-equal-returns batch normalizes to ~0 advantages
-        #    (nothing to learn), so an informative update needs return variance across the batch.
-        returns = (returns - returns.mean()) / (returns.std() + 1e-7)
+        # 2. Keep RAW MC returns as the value target — deliberately NOT z-scored (the PPO-PyTorch
+        #    reference z-scores returns, but it pairs that with an UNBOUNDED critic). Two reasons this
+        #    matters HERE (independently reviewed — see the plan / docs/ppo_iclr_blog_post.md #7):
+        #      (a) our value head ends in tanh (V ∈ [-1,1]); raw returns are γ^k·(±1) ∈ [-1,1] so they
+        #          are tanh-FEASIBLE, whereas z-scored returns routinely exceed ±1 → tanh saturates
+        #          (vanishing grad exactly where error is largest; explained_var pinned near 0).
+        #      (b) with terminal-only ±1 reward, z-scoring the returns ERASES the win/loss signal: an
+        #          all-wins batch re-centers to ~0 mean, leaving only the intra-game γ-discount order
+        #          as gradient ("later-in-game = good" regardless of the actual result) — a CONFIDENTLY
+        #          WRONG signal that worsens as win-rate climbs (batches get win-heavy). Raw returns
+        #          keep the outcome signal; V learns E[return|s] to absorb it.
 
-        # 3. Collate the ragged buffer once. Advantage = normalized return − stored act-time V
-        #    (Monte-Carlo baseline); detached — a constant target w.r.t. the policy gradient.
+        # 3. Collate the ragged buffer once. Advantage = raw return − stored act-time V (the MC
+        #    baseline); detached — a constant target w.r.t. the policy gradient.
         (dense_state, state_ids, opt_b, cid_b, aid_b,
          mask, actions, old_logp, old_v) = self._collate()
         advantages = (returns - old_v).detach()
+        # Normalize the ADVANTAGES (not the returns) — ICLR "37 details" #7. This is the coherent
+        # place to normalize: advantages are post-baseline (≈zero-mean by construction), so scaling
+        # them only fixes the policy-gradient step size WITHOUT destroying the win/loss information the
+        # baseline exists to handle. +1e-8 guards a zero-variance batch (→ ~0 advantages, nothing to
+        # learn). NOTE: a good baseline is load-bearing here — early on V≈0 so adv≈returns and this
+        # degrades toward return-normalization; it becomes correct as the (now tanh-feasible) V learns.
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # 4. K epochs of full-batch clipped-surrogate ascent over the same rollout.
         stats = {}
@@ -727,6 +770,12 @@ def _selftest(games=2, seed=0):
     assert len(ppo.buffer) > 0, "no policy nodes recorded"
     batch = ppo._collate()
     logp, V, ent = ppo.policy.evaluate(*batch[:6], batch[6])
+    # act↔evaluate invariant (the no-policy_old ratio trick depends on it: ratio≡1 on epoch 0). The
+    # logp captured at act() time (batch=1, unmasked, n options — stored in buffer.logprobs == batch[7])
+    # must equal evaluate()'s batched + zero-padded + (-1e9)-masked re-score of the SAME stored action.
+    # No optimizer.step ran during collection, so the net is unchanged and these must match to ~1e-6.
+    assert torch.allclose(logp.detach(), batch[7], atol=1e-5), \
+        "act()-time logp disagrees with evaluate()'s batched/masked re-score (ratio!=1 on epoch 0)"
     (logp.sum() + V.sum() + ent.sum()).backward()
     assert ppo.policy.card_emb.weight.grad is not None, "embeddings received no gradient"
 
@@ -759,7 +808,7 @@ def _make_transitions():
     exact shapes RolloutBuffer.add expects. Design rationale (all load-bearing):
       * single-step-per-episode ⇒ MC return == reward (gamma-independent) and exercises the
         per-episode reset on every step;
-      * ±1 rewards give the return VARIANCE normalization needs (equal returns ⇒ ~0 advantages);
+      * ±1 rewards give the advantage VARIANCE normalization needs (equal returns ⇒ ~0 advantages);
       * distinct states keep the value targets learnable (V(S_g)→+, V(S_b)→−);
       * the two option rows must differ (distinct dense bit + distinct card id) or identical logits
         would pin the softmax (the encode_options CAVEAT);
