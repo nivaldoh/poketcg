@@ -1,5 +1,7 @@
 # The `cg` simulator SDK
 
+Note: this file was created before the rest of the engine documentation was copied to this repo, so it's probably redundant and needs to be reviewed.
+
 Reference for the proprietary Pokémon TCG simulator (`cg`). The API below is **ground truth** read from the vendored source at `vendor/cg-lib/cg/` (`api.py`, `game.py`, `sim.py`) — not inferred. SDK docs upstream: https://matsuoinstitute.github.io/cabt/.
 
 ## Obtaining / restoring the engine
@@ -35,7 +37,7 @@ Each `option` has a `type` (`OptionType`: `PLAY`, `ATTACH`, `EVOLVE`, `ABILITY`,
 
 ## Game driver loop
 
-From `cg.game` (see `run_battle.py` and `starter_rl_kaggle.py`):
+From `cg.game` (see `utils/run_smoketest_battle.py` and `starter_rl_kaggle.py`):
 
 ```python
 obs, start_data = battle_start(deck0, deck1)   # both decks are 60 IDs; errorPlayer >= 0 (or obs is None) => deck rejected
