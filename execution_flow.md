@@ -13,7 +13,7 @@ you want to zoom in. Boxes are self-contained, so some inputs are repeated acros
 
 ---
 
-## Flow 0 · The big picture (the project lifecycle)
+## Flow 0: The big picture (the project lifecycle)
 
 One idea runs through everything. A game state comes in, gets turned into numbers, a small
 neural net (`MyModel`) scores the legal choices, and an agent returns which choice(s) to make:
@@ -43,12 +43,12 @@ decks + card data        TRAIN (self-play battles)        EVAL (head-to-head)
 
 *(Heavy training/eval runs are offloaded to Kaggle — see Flow 6.)*
 
-The files that matter, and where each fits:
+Files:
 
 | File | Role | In one sentence |
 |---|---|---|
 | `tcg_model.py` | the **brain** | turns an obs into features, runs `MyModel`, and wraps it as `mcts_agent` / `random_agent`; also holds `sample_deck`. |
-| `run_battle.py` | the **driver** | plays one battle start→finish with `random_agent`; the smallest "engine works" test. |
+| `utils/run_smoketest_battle.py` | the **driver** | plays one battle start→finish with `random_agent`; the smallest "engine works" test. |
 | `train_nashpg.py` | **training** (active) | self-play NashPG; updates `MyModel`, saves `out/<prefix>*.pth`. |
 | `starter_rl_kaggle.py` | training (older) | RL + MCTS self-play; the original trainer. |
 | `train_reinforce.py` | training (experiment) | plain REINFORCE; tried, regressed. |
@@ -56,13 +56,13 @@ The files that matter, and where each fits:
 | `eval_mymodel.py`, `eval_agreement.py` | scoring (extra) | mirror win-rate / move-agreement signals. |
 | `kaggle/push_sweep.py` | **offload** | ships code + checkpoints to Kaggle to run heavy jobs. |
 
-Where each loads its deck: `run_battle.py` reads a CSV (`--deck`, default `deck.csv`);
+Where each loads its deck: `utils/run_smoketest_battle.py` reads a CSV (`--deck`, default `deck.csv`);
 `train_nashpg.py` & `eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`);
 `eval_mymodel.py` & `eval_agreement.py` read `deck.csv` (the Lucario deck).
 
 ---
 
-## The flows (open one at a time)
+## Execution flows
 
 | Flow | Zoom level | What it shows |
 |---|---|---|
@@ -73,14 +73,12 @@ Where each loads its deck: `run_battle.py` reads a CSV (`--deck`, default `deck.
 | **5** | eval | one match; nests **5a** play_match · **5b** the modes & extra tools |
 | **6** | offload | running heavy jobs on Kaggle |
 
-**Start with Flow 1** — it's the heart; everything else hangs off it.
-
 ---
 
-<details>
-<summary><b>▸ Flow 1 · The battle loop</b> — the spine everything reuses</summary>
+<flow1>
+Flow 1: battle loop
 
-`run_battle.py` is the simplest place to see it (`grep -n 'def play_one' run_battle.py`).
+`utils/run_smoketest_battle.py` is the simplest place to see it (`grep -n 'def play_one' utils/run_smoketest_battle.py`).
 
 ```
 STEP 0 · Pick a deck
@@ -129,9 +127,9 @@ Small print (skip on first read):
 - The agent returns **option indices, not card IDs**.
 - It must return between `minCount` and `maxCount` indices, with **no repeats**.
 - There's a special first-ever call where an agent returns a 60-card *deck* instead — but that
-  never happens in `run_battle.py`, because both decks are handed over up front in Step 1.
+  never happens in `utils/run_smoketest_battle.py`, because both decks are handed over up front in Step 1.
 
-</details>
+</flow1>
 
 <details>
 <summary><b>▸ Flow 2 · A real game (seed 0)</b> — the same loop, with actual values</summary>
@@ -497,7 +495,7 @@ two runs are only compared when their settings match.
 STEP · one battle between two agents
   IN   A, B, seat_a (0 or 1)
   DO   _play_one(A, B, seat_a): same battle_start -> while result<0: battle_select -> battle_finish
-       loop as run_battle.py, BUT each decision is routed to the right agent by
+       loop as utils/run_smoketest_battle.py, BUT each decision is routed to the right agent by
        obs["current"]["yourIndex"]  (== seat_a ? A : B)
   OUT  result  (0/1 = that seat won, 2 = draw)
         |
@@ -512,7 +510,7 @@ STEP · many battles, seat-swapped
 
 Grep: `grep -n "def _play_one\|def play_match" eval.py`. The same shape (route by `yourIndex`,
 seat-swap by `i % 2`) appears in `eval_mymodel.py::play` and, with a single agent, in
-`run_battle.py::play_one`.
+`utils/run_smoketest_battle.py::play_one`.
 
 </details>
 

@@ -25,7 +25,7 @@ and read flag defaults from `--help` at use time (never hardcode them).
 
 Every metric is an aggregation over a single bit: who won one battle. A battle ends when
 `obs["current"]["result"] >= 0`, with `0` = seat 0 won, `1` = seat 1 won, `2` = draw — equivalently,
-`result == your seat index` is a win (`grep -n "def play_one" run_battle.py`; fuller contract in
+`result == your seat index` is a win (`grep -n "def play_one" utils/run_smoketest_battle.py`; fuller contract in
 `docs/cg-sdk.md`). Win rate, Elo, and puzzle scores are all just ways of averaging this bit while
 fighting the noise around it.
 
@@ -204,7 +204,7 @@ python eval.py --mode sprt --checkpoint out/A.pth --baseline-checkpoint out/B.pt
 python eval.py --checkpoints out/a.pth,out/b.pth # clean mirror round-robin (skill ranking)
 TORCHDYNAMO_DISABLE=1 python eval_agreement.py --ckpts out/A.pth,out/B.pth  # held-out move-agreement
 TORCHDYNAMO_DISABLE=1 python eval_mymodel.py      # BC MyModel on the Lucario mirror
-python run_battle.py                             # smallest signal that the engine runs at all
+python utils/run_smoketest_battle.py                             # smallest signal that the engine runs at all
 ```
 
 Run `python eval.py --help` / `python eval_mymodel.py --help` for the current flags and defaults

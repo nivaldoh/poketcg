@@ -32,11 +32,12 @@ _OUT = os.path.join(_HERE, "out_kaggle")
 
 DATASET_SLUG = "poketcg-nashpg-code-ckpts"
 
-# The full import closure of train_nashpg.py (eval.py pulls in the rule-based starters, which open
-# decks/<name>.csv and call all_card_data() AT IMPORT -- so decks/ MUST ship too).
+# The full import closure of train_nashpg.py (eval.py pulls in the rule-based agents, which open
+# decks/<name>.csv and call all_card_data() AT IMPORT -- so decks/ MUST ship too). copy2 flattens
+# each path to its basename, so the agents land flat in the dataset (run_br.py imports them by name).
 CODE_FILES = ["train_nashpg.py", "tcg_model.py", "eval.py", "eval_mymodel.py",
-              "rulebased_lucario.py", "starter_rulebased_abomasnow_kaggle.py",
-              "starter_rulebased_dragapult_ex_kaggle.py", "starter_rulebased_iono_kaggle.py"]
+              "game_agents/rulebased/lucario.py", "game_agents/rulebased/abomasnow.py",
+              "game_agents/rulebased/dragapult_ex.py", "game_agents/rulebased/iono.py"]
 # Probe checkpoints (the experiment matrix's targets, by stem -> out/<stem>.pth).
 DEFAULT_TARGETS = ["nashpg_a0_final", "nashpg_a02_final", "nashpg_a0_init", "nashpg_a02_init"]
 DEFAULT_SEEDS = [0, 1, 2]

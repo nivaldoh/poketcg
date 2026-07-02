@@ -10,8 +10,8 @@ backlog; it's now the index). Skills live in `.claude/skills/<name>/SKILL.md`; t
 | Skill | Use when | Reuses / source of truth | Path |
 |---|---|---|---|
 | **`tcg-rules-critic`** | correctness depends on TCG rules — deck legality, evolution, energy/retreat, prize/KO, status, determinization, heuristic/feature/eval design | `docs/rulebook.md`; `all_card_data()`; memory `poketcg-card-ids-and-decks` | `.claude/skills/tcg-rules-critic/` |
-| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_mymodel.py` win-rates | `docs/eval_info.md`; memory `eval-training-not-helping-yet`, `eval-info-staged-methodology` | `.claude/skills/eval-discipline/` |
-| **`cg-agent-contract`** | authoring/debugging an `agent()`, a deck, or option-handling code | `docs/cg-sdk.md`; `run_battle.py`; `get_card()` in `tcg_model.py` | `.claude/skills/cg-agent-contract/` |
+| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_mymodel.py` / `eval_ppo.py` win-rates, judging a PPO run's health from its metrics jsonl / picking a checkpoint | `docs/eval_info.md`; `evaluation_harness_report.md`; bundled `ppo-health-reference.md`; memory `eval-training-not-helping-yet`, `ppo-failure-investigation-verdict` | `.claude/skills/eval-discipline/` |
+| **`cg-agent-contract`** | authoring/debugging an `agent()`, a deck, or option-handling code | `docs/cg-sdk.md`; `utils/run_smoketest_battle.py`; `get_card()` in `tcg_model.py` | `.claude/skills/cg-agent-contract/` |
 | **`kaggle-submission`** | explicitly asked to package/submit a deployable agent (rare, high-stakes) | bundled `pack_submission.py` (executable layout SoT) | `.claude/skills/kaggle-submission/` |
 
 ## Hook
@@ -57,7 +57,7 @@ won't notice when they rot. Every skill here obeys all six; hold new ones to the
 ## How these compose with the verify-loop
 
 The skills reinforce the repo's verify-loop; they don't replace it. The chain when changing agent
-code: author/debug under **`cg-agent-contract`** → run the `run_battle.py`-style smoke assertion (the
+code: author/debug under **`cg-agent-contract`** → run the `utils/run_smoketest_battle.py`-style smoke assertion (the
 smallest "engine still runs" signal) → interpret head-to-head numbers under **`eval-discipline`** at a
 trustworthy `n` → package with **`kaggle-submission`** only at the very end (submit only when
 explicitly asked). **`tcg-rules-critic`** slots in wherever a step depends on game rules. Each skill

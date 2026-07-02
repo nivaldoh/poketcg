@@ -15,7 +15,9 @@ Design for the driver:
     random everywhere, loses all 16 deck×opponent cells vs the field). DELIBERATE consequence:
     the training field == eval_ppo.py's field, so that eval is in-distribution — acceptable
     because the project goal is beating exactly this field.
-  * `self` (live-policy mirror), `random`, `frozen` remain as curriculum/fallback modes. Under
+  * `self` (live-policy mirror), `random`, `frozen` remain as curriculum/fallback modes, and
+    `--opponent` accepts a comma MIX drawn per game (e.g. `rulebased,random` — the reward-
+    starvation curriculum lever from out/ppo_failure_investigation.md). Under
     `--opponent self` the collect win-rate is ~50% BY CONSTRUCTION (same policy both seats) —
     read progress from eval_ppo.py instead; vs the rule-based field the collect win-rate IS a
     genuine progress signal.
@@ -63,23 +65,26 @@ from ppo_model import PPO, STATE_DIM, OPTION_DIM                       # noqa: E
 # ============================================================================================
 # TODO: maybe this is where we could later add a battle visualizer?
 def collect_games(ppo, next_opponent, decks, n_games):
-    """Play `n_games`, appending the PPO seat's learned decisions to ppo.buffer. Returns the
-    per-game seat-relative result G (for win-rate logging). `decks` is a LIST; the learner picks
-    one at random each game, so a single shared buffer/model learns all decks. `next_opponent()`
-    is called once per game and returns (opp_fn, opp_deck): opp_deck None = MIRROR (the opponent
-    plays the learner's deck — the self/random/frozen modes, exactly the old behavior); a real
-    deck = ASYMMETRIC battle (the rulebased field, each archetype on its own deck — eval.py's
-    `_play_one` seat pattern). Vs a fixed opponent the win-rate is a genuine progress meter;
-    under --opponent self it stays ~50% BY CONSTRUCTION (use eval_ppo.py instead there).
+    """Play `n_games`, appending the PPO seat's learned decisions to ppo.buffer. Returns per-game
+    records (deck_name, opp_name, G) — G is the seat-relative result — so the metrics jsonl can
+    carry the per-matchup breakdown (the failure investigation had to reconstruct per-opponent
+    trends from checkpoints because only the pooled win-rate was logged). `decks` is a list of
+    (name, deck) pairs; the learner picks one at random each game, so a single shared
+    buffer/model learns all decks. `next_opponent()` is called once per game and returns
+    (opp_fn, opp_deck, opp_name): opp_deck None = MIRROR (the opponent plays the learner's deck —
+    the self/random/frozen modes, exactly the old behavior); a real deck = ASYMMETRIC battle (the
+    rulebased field, each archetype on its own deck — eval.py's `_play_one` seat pattern). Vs a
+    fixed opponent the win-rate is a genuine progress meter; under --opponent self it stays ~50%
+    BY CONSTRUCTION (use eval_ppo.py instead there).
 
     The cg battle is a PROCESS-GLOBAL SINGLETON — a leaked live battle corrupts every later
     game in the process, so battle_finish() MUST run even on error (try/finally). In the local
     battle_start-driven loop `obs.select` is never None (the deck-return path is Kaggle-only)."""
-    results = []
+    records = []
     for g in range(n_games):
         ppo_seat = g % 2                      # alternate seats for symmetry
-        learner_deck = random.choice(decks)   # random learner deck/game; decoupled from seat parity
-        opp_fn, opp_deck = next_opponent()
+        deck_name, learner_deck = random.choice(decks)  # random learner deck/game; decoupled from seat parity
+        opp_fn, opp_deck, opp_name = next_opponent()
         seat_decks = [None, None]
         seat_decks[ppo_seat] = learner_deck
         seat_decks[1 - ppo_seat] = opp_deck if opp_deck is not None else learner_deck
@@ -111,8 +116,8 @@ def collect_games(ppo, next_opponent, decks, n_games):
         if recorded_any:
             ppo.buffer.rewards[-1] = G
             ppo.buffer.is_terminals[-1] = True
-        results.append(G)
-    return results
+        records.append((deck_name, opp_name, G))
+    return records
 
 
 # ============================================================================================
@@ -134,21 +139,32 @@ def policy_agent(net, greedy=False):
 
 
 def make_opponent(kind, ppo, device):
-    """Return a per-game provider next_opponent() -> (opp_fn, opp_deck_or_None) for the non-PPO
-    seat; opp_deck None = mirror (opponent plays the learner's deck). Default: rulebased."""
+    """Return a per-game provider next_opponent() -> (opp_fn, opp_deck_or_None, opp_name) for the
+    non-PPO seat; opp_deck None = mirror (opponent plays the learner's deck). `kind` may be a
+    COMMA LIST (e.g. 'rulebased,random'): one entry is drawn uniformly per game, and repeating a
+    kind weights it ('rulebased,rulebased,random' = 2:1) — the curriculum lever for reward
+    starvation (out/ppo_failure_investigation.md, verdict 2: vs dragapult/iono the field alone
+    yields ~0.1 wins/update). Default: rulebased."""
+    kinds = [k.strip() for k in kind.split(",") if k.strip()]
+    if not kinds:
+        raise ValueError(f"empty opponent spec: {kind!r}")
+    if len(kinds) > 1:
+        providers = [make_opponent(k, ppo, device) for k in kinds]
+        return lambda: random.choice(providers)()
+    kind = kinds[0]
     if kind == "self":
         # SELF-PLAY: opponent = the LIVE current policy (no snapshot). Within a collection
         # round no update runs, so the opponent is a consistent copy of the current policy; across
         # rounds both seats improve in lockstep. policy_agent never touches ppo.buffer, so ONLY the
         # PPO seat records and the PPO ratio (old_logp/V_old captured at act time) stays valid.
         fn = policy_agent(ppo.policy)
-        return lambda: (fn, None)
+        return lambda: (fn, None, "self")
     if kind == "random":
-        return lambda: (random_agent, None)
+        return lambda: (random_agent, None, "random")
     if kind == "frozen":
         snapshot = copy.deepcopy(ppo.policy).to(device).eval()
         fn = policy_agent(snapshot, greedy=False)     # samples, exactly like the old inline opp()
-        return lambda: (fn, None)
+        return lambda: (fn, None, "frozen")
     if kind == "rulebased":
         # THE FIELD (default): one of the 4 rule-based archetypes per game, each playing ITS OWN
         # deck (asymmetric battle_start — the fix for the measured self-play non-transfer).
@@ -158,7 +174,7 @@ def make_opponent(kind, ppo, device):
 
         def next_opponent():
             a = random.choice(pool)
-            return a.fn, a.deck
+            return a.fn, a.deck, a.name               # eval.Agent.name (make_rulebased = "rulebased")
         return next_opponent
     raise ValueError(f"unknown opponent kind: {kind!r}")
 
@@ -172,7 +188,7 @@ def train(args):
     torch.manual_seed(args.seed)
 
     deck_names = [s.strip() for s in args.decks.split(",") if s.strip()]
-    decks = [load_deck(os.path.join(_REPO_ROOT, "decks", f"{n}.csv")) for n in deck_names]
+    decks = [(n, load_deck(os.path.join(_REPO_ROOT, "decks", f"{n}.csv"))) for n in deck_names]
     ppo = PPO(STATE_DIM, OPTION_DIM, args.lr, args.gamma, args.eps_clip, args.k_epochs,
               args.vf_coef, args.ent_coef, device,
               gae_lambda=args.gae_lambda, minibatches=args.minibatches)
@@ -195,23 +211,28 @@ def train(args):
           f"metrics={metrics_path}", flush=True)
     for it in range(1, args.updates + 1):
         t0 = time.time()
-        results = collect_games(ppo, next_opponent, decks, args.games_per_update)
+        records = collect_games(ppo, next_opponent, decks, args.games_per_update)
         n_samples = len(ppo.buffer)                # capture before update() clears the buffer
         stats = ppo.update() or {}
+        results = [G for _, _, G in records]
         wins = sum(1 for G in results if G > 0)
         draws = sum(1 for G in results if G == 0)
         n = len(results)
         games_per_s = n / max(time.time() - t0, 1e-9)   # collect+update per the nashpg convention
         with open(metrics_path, "a") as f:
+            # per_game [[learner_deck, opponent, G], ...] — the per-matchup breakdown the failure
+            # investigation lacked (pooled win-rate masked the dead dragapult/iono columns).
             f.write(json.dumps({"update": it, "games": n, "wins": wins, "draws": draws,
                                 "losses": n - wins - draws, "n_samples": n_samples,
-                                "games_per_s": round(games_per_s, 2)} | stats) + "\n")
+                                "games_per_s": round(games_per_s, 2),
+                                "per_game": [[d, o, G] for d, o, G in records]} | stats) + "\n")
         # Vs a FIXED opponent (rulebased/random/frozen) winrate is a genuine progress signal;
         # under --opponent self it is ~.5 by construction (mirror) — use eval_ppo.py there. The
         # update diagnostics (value fit / entropy / KL) matter in every mode.
         print(f"[update {it}/{args.updates}] games={n} winrate={wins / n:.3f} samples={n_samples} "
               f"loss={stats.get('loss', float('nan')):.3f} vloss={stats.get('value_loss', float('nan')):.3f} "
-              f"ev={stats.get('explained_var', float('nan')):+.2f} ent={stats.get('entropy', float('nan')):.3f} "
+              f"ev={stats.get('explained_var', float('nan')):+.2f} "
+              f"ev_h={stats.get('ev_true_pre', float('nan')):+.2f} ent={stats.get('entropy', float('nan')):.3f} "
               f"ent_n={stats.get('entropy_norm', float('nan')):.2f} kl={stats.get('approx_kl', float('nan')):.4f} "
               f"clip={stats.get('clip_frac', float('nan')):.2f} ({games_per_s:.1f} g/s)", flush=True)
         # WARN-only tripwires — only unambiguous bug signals (zero false-positive risk), and never
@@ -251,10 +272,13 @@ def main() -> int:
                     help="games collected before each PPO update")
     ap.add_argument("--updates", type=int, default=100, help="number of PPO updates")
     ap.add_argument("--opponent", default="rulebased",
-                    choices=["self", "random", "frozen", "rulebased"],
-                    help="non-PPO seat: 'rulebased'=the 4-archetype field, each on its own deck "
-                         "(default — the measured fix for self-play non-transfer); 'self'=live "
-                         "current policy (mirror self-play); 'random'/'frozen'=curriculum/fallback")
+                    help="non-PPO seat: comma list over {rulebased,self,random,frozen}, drawn "
+                         "uniformly per game (repeat a kind to weight it). 'rulebased'=the "
+                         "4-archetype field, each on its own deck (default — the measured fix for "
+                         "self-play non-transfer); 'self'=live current policy (mirror self-play); "
+                         "'random'/'frozen'=curriculum/fallback. E.g. 'rulebased,random' mixes in "
+                         "winnable games against the reward starvation measured in "
+                         "out/ppo_failure_investigation.md")
     ap.add_argument("--decks", default="lucario,abomasnow,dragapult_ex,iono",
                     help="comma list of deck names in decks/<name>.csv the LEARNER cycles through "
                          "(the rulebased opponent always plays its own archetype deck)")
@@ -285,6 +309,12 @@ if __name__ == "__main__":
 #      decks vs the 4 archetypes — the fix for finding 5's non-transfer), GAE(λ=0.95)/γ=1.0
 #      TD(λ) value targets (the broken-critic fix), K epochs × shuffled minibatches with
 #      per-minibatch advantage normalization (approx_kl was ~0.001 — policy barely moved).
+#   7. CRITIC FIX + HONEST TELEMETRY (current, from out/ppo_failure_investigation.md): LINEAR
+#      value head (the tanh output saturated near -1 under the ~90%-loss field, holdout EV ~0 —
+#      "win-only REINFORCE"), ev_true_pre = holdout EV of act-time V vs true outcome (the gate;
+#      in-sample explained_var read ~0.4 while holdout was ~0), per_game [deck,opp,G] records in
+#      the metrics jsonl, and --opponent comma-mix (e.g. 'rulebased,random') as the
+#      reward-starvation curriculum lever.
 #      Future: both-seat recording under self-play (2x data), league/lagged-snapshot opponent
 #      mixes, multi-select coverage.
 # ============================================================================================

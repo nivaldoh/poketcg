@@ -4,7 +4,7 @@ description: >-
   Write or modify a cg agent() without tripping the contract. Use when authoring or debugging an
   agent, a deck, or option-handling code: returning option indices (not card IDs), honoring
   minCount/maxCount, the first-call 60-card deck, opponent-zone visibility, and determinization
-  assumptions. Forces the contract checklist and the run_battle.py smoke assertion.
+  assumptions. Forces the contract checklist and the utils/run_smoketest_battle.py smoke assertion.
 ---
 
 # cg-agent-contract
@@ -36,8 +36,8 @@ ground truth where any prose disagrees.
 
 ## Smoke test every change (the repo convention)
 Ship the smallest "engine still runs" signal with any agent edit: the `play_one` driver loop and its
-terminal assertion in `run_battle.py` (locate: `grep -n 'def play_one\|assert result' run_battle.py`,
-which asserts `result in (0, 1, 2)`). Run `python run_battle.py [--games N]` after a change.
+terminal assertion in `utils/run_smoketest_battle.py` (locate: `grep -n 'def play_one\|assert result' utils/run_smoketest_battle.py`,
+which asserts `result in (0, 1, 2)`). Run `python utils/run_smoketest_battle.py [--games N]` after a change.
 
 ## Single source of truth + known duplicates
 - Canonical contract prose: **`docs/cg-sdk.md`** (read from the vendored source; already referenced
@@ -51,7 +51,7 @@ are ground truth over any doc; confirm a symbol/heading still exists before rely
 
 ## Where this fits
 This is the **author/debug** step of the repo's verify-loop (`docs/skills_and_hooks.md` → "How these
-compose"): **write the agent here** → run the `run_battle.py` smoke assertion → interpret any
+compose"): **write the agent here** → run the `utils/run_smoketest_battle.py` smoke assertion → interpret any
 head-to-head numbers under `eval-discipline` → package with `kaggle-submission` only at the end.
 Use `tcg-rules-critic` wherever a step depends on the rules. Heed the "what does NOT help" guardrails
 (self-play diverges; the value head is miscalibrated on the mirror; the AMAGO/Metamon port was

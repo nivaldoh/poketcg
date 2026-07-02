@@ -3,9 +3,8 @@
 
 This script is the **executable single source of truth** for the submission layout: a valid
 bundle is exactly three top-level entries — `main.py`, `cg/`, `deck.csv` — packed with no nested
-prefix. The same fact is *prose-duplicated* in `README.md`, `CLAUDE.md`, and the Kaggle starter
-`starter_rulebased_lucario_kaggle.py` (its `tarfile` block). Those are copies; reconcile them
-against this script's assertions rather than re-deriving the layout by hand.
+prefix. The same fact is *prose-duplicated* in `README.md` and `CLAUDE.md`. Those are copies;
+reconcile them against this script's assertions rather than re-deriving the layout by hand.
 
 It does NOT submit. Submitting is a separate, explicit step (see the skill's SKILL.md).
 
@@ -68,7 +67,7 @@ def validate_deck(deck_path: str, cg_pkg_dir: str) -> list[str]:
     if not os.path.isfile(deck_path):
         return [f"deck not found: {deck_path}"]
 
-    # Import the engine from the parent of the cg package dir (mirrors run_battle.py's wiring).
+    # Import the engine from the parent of the cg package dir (mirrors utils/run_smoketest_battle.py's wiring).
     cg_lib = os.path.dirname(os.path.abspath(cg_pkg_dir))
     if cg_lib not in sys.path:
         sys.path.insert(0, cg_lib)

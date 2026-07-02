@@ -272,3 +272,83 @@ Work log (lean — what's been tried/done).
   hard-heuristic floor) and still <50% in all 16 cells: the fix repaired the OPTIMIZATION
   (critic + step size + training distribution), not yet the strength gap vs the strong decks.
   Next levers: longer runs, opponent mixing/curriculum, and (deferred) multi-select coverage.
+
+2026-07-02 (later) — PPO failure investigation (evidence-first; report: out/ppo_failure_investigation.md)
+- Pre-registered 5 hypotheses + decision rules, then probed: artifact analysis, checkpoint
+  learning curves (ppo_field_init/50../300), vs-random meter, duplicate-option probe, holdout
+  critic probe, dragapult-only starvation runs (ppo_dragonly_fresh/resume), zero-contrast-skip
+  ablation (ppo_skipzero). All probes = scratchpad throwaways; NO core-file edits.
+- VERDICT #1 (implementation): the critic is broken on HOLDOUT — EV -0.013 over 22,889 fresh
+  decisions vs true outcome, V pinned at -0.965 (mean G -0.743); ranks fine (AUC 0.76 early /
+  0.85 late) but is a saturated near-constant regressor. GAE arithmetic then gives win-episode
+  advantage ~+1.9 vs loss-episode ~-0.03: PPO degenerates to win-only REINFORCE + noise. The
+  in-sample explained_var ~0.5 telemetry (and yesterday's "critic FIXED" claim) was memorization
+  of the just-fitted batch + self-referential TD(lambda) targets — CORRECTED.
+- VERDICT #2 (setup): reward starvation vs the field — gains monotone in baseline win rate
+  (columns +14.0/+5.4/+0.1/-0.8 for baselines 10.4/2.6/2.25/1.4%); floors never move at any
+  checkpoint; ~0.1 wins/update vs dragapult/iono. C1: fresh net flat at 12x exposure
+  (2.9/4.8/3.6% blocks); resumed net crawls 2.0->5.2% (disjoint but glacial).
+- KILLED: ratio-spike damage (all windows <=1.25 sigma, kl->future-win corr +0.02); duplicate
+  option rows as driver (chosen-in-dup 14.6-36.4%, LOWEST on the dead decks); zero-contrast
+  noise updates as CAUSE (skip-ablation indistinguishable: mirrors ~35.0%/0.0%, vs-random 22.0
+  vs 21.5%). "Plateau" is actually rise-then-EROSION: lucario mirror ckpt150 44.2% -> ckpt300
+  34.8% (n=600/point, disjoint, z~3.3); vs-random ckpt100 30.2% -> ckpt300 21.5% (disjoint).
+- Next-pass recommendations (report S"Recommendations"): fix value baseline first (holdout-EV
+  probe as the gate), curriculum for reachability, per-opponent win logging, eval-best (not
+  _final) checkpoint selection.
+
+2026-07-02 (later still) — PPO fix pass from the failure investigation (plan-reviewed; lean, 2 files)
+- Skeptical re-verification of the report against the code first: tanh head / terminal-only ±1 /
+  gamma=1.0 / per-minibatch adv-norm all confirmed in source; report arithmetic checks out. One
+  nuance sharpened: failure #2's severity is partly DOWNSTREAM of #1 (a working critic learns
+  from losses too; C1 "exposure doesn't help" was measured WITH the broken critic) — so the
+  curriculum default was NOT changed, only enabled as a lever.
+- ppo_model.py: value head is now LINEAR-output (final nn.Tanh() removed — saturation trap:
+  (1-V^2) gradient factor ~0.04 at the measured V~-0.97 pin); raw-target rationale rewritten
+  (bounded targets, z-scoring erases win/loss signal). NEW ev_true_pre in STATS_KEYS: holdout EV
+  of act-time V vs TRUE outcome (act-time values predate the update -> out-of-sample for free,
+  every update; 0.0 = no-contrast batch). THE standing critic gate; in-sample explained_var kept
+  for continuity but demoted (smoke run showed ev=+0.78 vs ev_h=-0.08 on the same update — the
+  exact misleading gap the investigation documented, now visible live).
+- train_ppo.py: --opponent takes a comma MIX drawn per game (repeat to weight; e.g.
+  rulebased,random = the reward-starvation curriculum lever; default unchanged: rulebased);
+  next_opponent() returns (fn, deck, name); collect_games returns (deck,opp,G) records ->
+  per_game in the metrics jsonl (the per-matchup breakdown the investigation had to reconstruct
+  from checkpoints); ev_h= added to the per-update print line.
+- _update_learns_test now runs lr=1e-3 (was 1e-2): with the unsquashed head, 1e-2 on the tiny
+  2-sample buffer overshoots V past +-1 (shared card embeddings dominate state_repr there) and
+  flips advantage signs next update — probed at 1e-2/3e-3/1e-3, clean monotone at 1e-3;
+  synthetic-regime artifact, all assertions kept at full strength.
+- Verified: ppo_model.py selftest + --update-test PASS; train_ppo --help; 3-update smoke vs
+  rulebased,random (per_game spans all 4 archetype names + random, all 4 learner decks; no
+  ratio-drift warns). Deferred pending the gate: separate critic LR, fewer critic epochs, target
+  normalization, target-KL. GATE (next run): ev_true_pre >> 0 sustained on a real field run,
+  then eval_ppo matrix vs the ckpt150 anchor (44.2% lucario mirror, n=600); pick ckpts by eval.
+
+2026-07-02 (later) — eval-discipline skill upgraded with PPO run-health + distilled theory
+- Why: the skill predated the PPO Layer-1 stack; the in-sample explained_var incident is exactly
+  the class of error it exists to catch, and the theory sources (docs/ppo + vendored
+  reference_repos/implementation-matters) were only readable by re-opening a 3.4MB PDF each time.
+- .claude/skills/eval-discipline/SKILL.md: frontmatter triggers extended (metrics jsonl,
+  ev_true_pre vs explained_var, checkpoint selection, eval_ppo matrices); harness table gains
+  eval_ppo.py (mirror diagonal = skill read; IN-DISTRIBUTION by design; --skip-baseline curves;
+  sampled = honest headline) + a telemetry row; new "PPO training-run health (Layer-1)" reading
+  order (invariants -> ev_true_pre gate -> trends-not-thresholds -> eval-best checkpoint);
+  checklist adds holdout-over-in-sample, in-distribution framing, theory-claims discipline;
+  ruled-out list now includes the PPO non-causes.
+- NEW .claude/skills/eval-discipline/ppo-health-reference.md: attribution key ([measured-here] >
+  [blog]/[paper]/[engstrom-code] > [paper-memory]); per-STATS_KEYS metric guide (healthy vs
+  pathological + which bug each catches); bug->signal map; the 8 "What Matters" recommendation
+  boxes annotated with our deliberate divergences (gamma=1.0 theory-flag, stale advantages
+  across epochs, no small last-policy-layer init = open cross-check, shared embeddings between
+  heads); 7 contested claims recorded AS contested (value clipping, entropy bonus, value-norm,
+  adv-norm scope, env count, timeout bootstrap, KL estimator — ours is k3, verified); Engstrom
+  cross-check grep recipes (adv_normalize placement, held-out KL/value-loss logging pattern).
+  MuJoCo scope caveat + "no imported thresholds" rule (healthy legacy run had kl=0.039 vs the
+  blog's <0.02) stated up front.
+- docs/skills_and_hooks.md: eval-discipline table row synced to the new scope.
+- Verified: every grep recipe in both files hits (STATS_KEYS/ev_true_pre in ppo_model.py;
+  adv_normalize/advantage_and_return/logging symbols in the vendored Engstrom code); all cited
+  flags exist per eval_ppo/train_ppo/eval.py --help; frontmatter parses (skill reloaded with the
+  new description); facts cross-checked against ppo_model.py source (k3 estimator, GAE-once
+  placement, default init, shared-embedding coupling) rather than memory alone.

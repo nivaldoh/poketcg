@@ -422,16 +422,15 @@ class ActorCritic(nn.Module):
         state_repr_dim = state_dim + N_STATE_SLOTS * d_card
         option_repr_dim = option_dim + N_OPT_CARD_SLOTS * d_card + N_OPT_ATTACK_SLOTS * d_attack
 
-        # Value head: V(s) ∈ [-1, 1] via a final tanh — well-matched to the RAW TD(λ) targets
-        # PPO.update regresses on: a λ-return is a convex combination of n-step targets, each
-        # bounded by max(|r|, |V|) ≤ 1 under terminal-only ±1 reward and this tanh (THEORY-REVIEW
-        # FLAG: the boundedness argument). LOAD-BEARING coupling: this works ONLY because update()
-        # keeps the targets UN-normalized (see update() step 2). If you re-introduce target
-        # z-scoring, targets exceed ±1 and this tanh saturates — drop the final tanh in that case.
+        # Value head: LINEAR output (no output squash). A final tanh was removed after the field
+        # run measured it saturated under a ~90%-loss reward distribution: V pinned near −1,
+        # holdout EV ≈ 0, and the tanh's (1−V²) gradient factor crushed exactly the rare-win
+        # errors that carried the signal (out/ppo_failure_investigation.md, verdict 1). The
+        # terminal-only ±1 targets are bounded on their own, so an unbounded regressor is safe.
         self.value_head = nn.Sequential(
             nn.Linear(state_repr_dim, hidden), nn.Tanh(),
             nn.Linear(hidden, hidden), nn.Tanh(),
-            nn.Linear(hidden, 1), nn.Tanh(),
+            nn.Linear(hidden, 1),
         )
         # Policy scorer: scores ONE option from [state_repr ⊕ option_repr] → scalar logit.
         self.policy_scorer = nn.Sequential(
@@ -572,9 +571,11 @@ class RolloutBuffer:
 # returns. Selftests assert against this tuple so the dict and its consumers can't drift apart.
 # Aggregation semantics (since minibatching): all non-grad stats come from ONE full-batch
 # no_grad pass under the POST-update θ (update() step 6); ratio_dev_e0 from a full-batch pass
-# BEFORE any step; grad_norm_* are maxima over the epoch×minibatch training steps.
+# BEFORE any step; grad_norm_* are maxima over the epoch×minibatch training steps; ev_true_pre
+# compares act-time (pre-update = holdout) values to TRUE outcomes — the honest critic read.
 STATS_KEYS = (
     "loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac", "explained_var",
+    "ev_true_pre",
     "ratio_dev_e0", "ratio_max", "grad_norm_max", "grad_norm_policy_max", "grad_norm_value_max",
     "entropy_norm", "adv_mean_raw", "adv_std_raw",
     "return_mean", "return_std", "return_min", "return_max", "value_mean",
@@ -655,8 +656,8 @@ class PPO:
         epochs, whole-batch z-scored RETURNS) are deliberate: GAE + minibatching follow docs/ppo
         (ICLR "37 details" #5/#6/#7; "What Matters" §3.4/§3.5) and the NashPG reference config
         (γ=1.0, λ=0.95, 4 epochs × 4 minibatches — the same two-player zero-sum terminal-only
-        reward shape); raw un-z-scored value targets are load-bearing with the tanh value head
-        (see ActorCritic.value_head). Value-loss clipping stays OMITTED on purpose — Engstrom et
+        reward shape); value targets stay raw / un-z-scored (see step 2) with a LINEAR value
+        head (see ActorCritic.value_head). Value-loss clipping stays OMITTED on purpose — Engstrom et
         al. found no benefit and Andrychowicz et al. found it hurts.
 
         NO separate `policy_old` net (load-bearing): old_logp / V_old were captured at ACT time
@@ -692,16 +693,27 @@ class PPO:
             next_v = v
         advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        # 2. Keep RAW TD(λ) targets — deliberately NOT z-scored (the PPO-PyTorch reference z-scores
-        #    its returns, but it pairs that with an UNBOUNDED critic). Both original reasons survive
-        #    the GAE switch (independently reviewed for the MC version; THEORY-REVIEW FLAG for the
-        #    λ-return bound):
-        #      (a) our value head ends in tanh (V ∈ [-1,1]); a λ-return is a convex combination of
-        #          n-step targets, each bounded by max(|r|, |V|) ≤ 1 under terminal-only ±1 reward,
-        #          so raw targets stay tanh-FEASIBLE, whereas z-scored targets routinely exceed ±1
-        #          → tanh saturates (vanishing grad exactly where error is largest).
-        #      (b) with terminal-only ±1 reward, z-scoring targets ERASES the win/loss signal in a
-        #          win-heavy batch. Raw targets keep the outcome signal; V learns E[return|s].
+        # 1b. TRUE Monte-Carlo return per step (exact — rewards are terminal-only), for the
+        #    ev_true_pre holdout gate below: the act-time values in the buffer were predicted
+        #    BEFORE this update trained on these games, so measuring them against the true
+        #    outcomes is out-of-sample by construction. (explained_var is NOT: it is computed
+        #    post-fit against targets containing the critic's own bootstrapped values — it read
+        #    ~0.4 on the run whose holdout EV was ≈ 0, out/ppo_failure_investigation.md.)
+        g_true = []
+        ret = 0.0
+        for r, done in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
+            if done:
+                ret = 0.0
+            ret = r + self.gamma * ret
+            g_true.insert(0, ret)
+        g_true = torch.tensor(g_true, dtype=torch.float32, device=self.device)
+        # 2. Keep RAW TD(λ) targets — deliberately NOT z-scored (the PPO-PyTorch reference
+        #    z-scores its returns): with terminal-only ±1 reward the targets are already bounded
+        #    and well-scaled, and z-scoring ERASES the win/loss signal in a skewed batch (a
+        #    mostly-loss batch would recenter losses to ~0). Raw targets keep the outcome signal;
+        #    V learns E[return|s]. (The old companion reason — keeping targets feasible for a
+        #    tanh-bounded head — retired with the tanh output, which saturated; see
+        #    ActorCritic.value_head.)
 
         # 3. Collate the ragged buffer once; full-batch PRE-normalization advantage stats (the
         #    training loop normalizes per-minibatch below). Bug signatures: adv_mean_raw
@@ -711,6 +723,11 @@ class PPO:
          mask, actions, old_logp, old_v) = self._collate()
         adv_mean_raw = float(advantages.mean())
         adv_std_raw = float(advantages.std())
+        # ev_true_pre: HOLDOUT explained variance of the act-time V vs the true outcome (step 1b)
+        # — the standing critic gate (healthy ≫ 0). 0.0 = no-contrast batch (single outcome,
+        # var ≈ 0, uninformative; the guard also absorbs the B==1 NaN of unbiased var()).
+        var_g = float(g_true.var())
+        ev_true_pre = (1.0 - float((g_true - old_v).var()) / var_g) if var_g > 1e-12 else 0.0
 
         # 4. Epoch-0 full-batch ratio must be ≡1 BEFORE any optimizer step: old_logp was captured
         #    under this exact θ, so any deviation beyond fp noise means evaluate() failed to
@@ -789,6 +806,10 @@ class PPO:
                 "approx_kl": float(approx_kl),
                 "clip_frac": float(clip_frac),
                 "explained_var": float(explained_var),
+                # THE critic health read (see step 1b/3): holdout EV of act-time V vs true
+                # outcome. explained_var above stays for continuity but is in-sample/post-fit —
+                # trust ev_true_pre when they disagree.
+                "ev_true_pre": ev_true_pre,
                 # Layer-1 additions (see STATS_KEYS / evaluation_harness_report.md §1a).
                 # ratio_max: tail importance-weight violations hide behind a healthy mean
                 # KL ("Truly PPO"). entropy_norm ∈ (0,1]: entropy / ln(n_options) — raw
@@ -802,11 +823,11 @@ class PPO:
                 "entropy_norm": float((entropy / mask.sum(dim=1).float().log()).mean()),
                 "adv_mean_raw": adv_mean_raw,
                 "adv_std_raw": adv_std_raw,
-                # returns are TD(λ) targets, in [-1,1] up to fp rounding (convex combination
-                # of n-step targets bounded by max(|r|,|V|) ≤ 1) — min/max outside that range
-                # means the per-episode reset in the GAE recursion broke (bootstrap/reward
-                # leaking across episode boundaries). value_mean: act-time V, catches
-                # tanh-head saturation / sign bias alongside explained_var.
+                # returns are TD(λ) targets. With the unbounded linear value head, V (and so a
+                # λ-return) can drift somewhat outside [-1,1]; LARGE excursions still mean the
+                # per-episode reset in the GAE recursion broke (bootstrap/reward leaking across
+                # episode boundaries). value_mean: act-time V, catches sign bias / pinning
+                # alongside ev_true_pre.
                 "return_mean": float(returns.mean()),
                 "return_std": float(returns.std()),
                 "return_min": float(returns.min()),
@@ -975,7 +996,12 @@ def _measure(ppo, probe):
 def _update_learns_test(seed=0):
     torch.manual_seed(seed)
     device = torch.device("cpu")
-    ppo = PPO(STATE_DIM, OPTION_DIM, lr=1e-2, gamma=0.99, eps_clip=0.2, k_epochs=4,
+    # lr=1e-3 (was 1e-2 under the old tanh-squashed value head): with the LINEAR head, 1e-2 on
+    # this tiny 2-sample buffer overshoots V past the ±1 targets within one update (the shared
+    # card embeddings, 12 identical id slots per state here, dominate state_repr), which flips
+    # the advantage sign on the next update and yanks the policy back — a synthetic-regime
+    # step-size artifact, not a learning failure (real batches are ~500 fresh samples).
+    ppo = PPO(STATE_DIM, OPTION_DIM, lr=1e-3, gamma=0.99, eps_clip=0.2, k_epochs=4,
               vf_coef=0.5, ent_coef=0.01, device=device)
     # Small, deterministic, VARIED weight fill → logits start ≈0 (near-uniform policy) with plenty
     # of head-room, and reproducible across torch versions (nn.init defaults are not). A constant

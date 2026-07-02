@@ -45,14 +45,15 @@ layout. Don't hand-roll a `tar` invocation; run the script.
 
 ## Single source of truth + known duplicates
 - Canonical layout: **`pack_submission.py`'s assertions**.
-- The same layout is *prose-duplicated* in `README.md`, `CLAUDE.md`, and the Kaggle starter
-  `starter_rulebased_lucario_kaggle.py` (its `tarfile` block — `grep -n 'tarfile\|arcname'
-  starter_rulebased_lucario_kaggle.py`). Reconcile those against the script; don't add copy N+1.
+- The same layout is *prose-duplicated* in `README.md` and `CLAUDE.md`. Reconcile those against
+  the script; don't add copy N+1. (The old raw Kaggle export `starter_rulebased_lucario_kaggle.py`,
+  which carried its own `tarfile` block, was removed when the rule-based agents were cleaned and
+  moved to `game_agents/rulebased/`.)
 
 ## Adjacent: notebook → local module port (brief checklist)
 When porting a Kaggle starter to a local module (the reusable `agent()`), strip the Kaggle glue:
 `%%writefile main.py`, `glob('/kaggle/input/...')` path injection, the `/kaggle_simulations/agent/`
-deck-path fallback, and the `tarfile` packaging. (Already done for `rulebased_lucario.py`.)
+deck-path fallback, and the `tarfile` packaging. (Already done for the `game_agents/rulebased/` agents.)
 
 ## Drift-resilience
 Point at the script, don't restate the layout here. Reference symbols by name + a grep recipe (never
@@ -61,6 +62,6 @@ flags still exist before submitting; the `cg` engine and `all_card_data()` are g
 
 ## Where this fits
 This is the **final** step of the repo's verify-loop (`docs/skills_and_hooks.md` → "How these compose"):
-author/debug an agent under `cg-agent-contract` → run the `run_battle.py` smoke assertion → read
+author/debug an agent under `cg-agent-contract` → run the `utils/run_smoketest_battle.py` smoke assertion → read
 head-to-head numbers under `eval-discipline` → **package here, and submit only when explicitly
 asked**. Check game-rule assumptions with `tcg-rules-critic` if deck legality is ever in doubt.

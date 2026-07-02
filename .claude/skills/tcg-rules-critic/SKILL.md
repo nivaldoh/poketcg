@@ -54,7 +54,7 @@ or symbol still exists before relying on it.
 
 ## Where this fits
 This is the rules check in the repo's verify-loop (`docs/skills_and_hooks.md` → "How these compose"):
-author/debug an agent under `cg-agent-contract` → run the `run_battle.py` smoke assertion → read
+author/debug an agent under `cg-agent-contract` → run the `utils/run_smoketest_battle.py` smoke assertion → read
 head-to-head numbers under `eval-discipline` → package with `kaggle-submission` →
 **run this skill wherever a step depends on the rules**. All four skills now exist (see
 `docs/skills_and_hooks.md` for the index).
