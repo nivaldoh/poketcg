@@ -352,3 +352,24 @@ Work log (lean — what's been tried/done).
   flags exist per eval_ppo/train_ppo/eval.py --help; frontmatter parses (skill reloaded with the
   new description); facts cross-checked against ppo_model.py source (k3 estimator, GAE-once
   placement, default init, shared-embedding coupling) rather than memory alone.
+
+2026-07-02 (later still) — repo cleanup: stale refs fixed, NashPG remnants retired, Kaggle sweep retargeted to PPO
+- Why: the NashPG->PPO migration had only updated the skills layer; top-level docs still called
+  train_nashpg.py active, 10+ references pointed at a moved docs/cg-sdk.md, eval_agreement.py and
+  the Kaggle sweep were broken, and human-authored reports lived only in gitignored out/.
+- 9 commits (WIP landed first, then isolated cleanup): gitignore reference_repos//docs/ppo PDFs/
+  Zone.Identifier junk (+ removed the tracked ADS stub + throwaway coverage_probe.py); git mv
+  "docs/cabt engine/cg-sdk.md" -> docs/cg-sdk.md (heals every reference); rescued
+  ppo_ceiling_report.md / ppo_failure_investigation.md / ppo_anchor_summary.txt into docs/ppo/
+  (citers updated); surgical doc fixes (EVAL.md dead MODEL.md refs -> evaluation_harness_report.md
+  + eval_ppo.py row; README/CLAUDE.md/execution_flow.md now present PPO as active + Snorlax-1072
+  determinization claim corrected to mirror-sampling/Riolu-677; starter marked legacy); DELETED
+  eval_agreement.py (broken import of removed train_mymodel_bc; user chose drop over restore —
+  near-identical ckpts now unresolvable, notes point at git history); dead code (eval.py fit_elo,
+  tcg_model torch.optim; "mean-anchored" Elo wording corrected to the anchored fit actually
+  printed); Kaggle sweep retargeted NashPG BR -> train_ppo.py (new poketcg-ppo-code dataset slug,
+  run_ppo.py rebuilds decks/+utils/ for the flat dataset, --name x --seeds + --extra passthrough,
+  report reads the metrics jsonl; needs one-time `stage --create`); removed legacy_delete/.
+- Verified: ppo_model.py self-tests, all module imports, eval/eval_ppo/push_sweep --help, stage +
+  sweep dry-runs, rendered kernel parses, a real 1-update train_ppo run through the simulated
+  flat WORK layout + report on its output, run_smoketest_battle, per-commit zero-stale-ref greps.
