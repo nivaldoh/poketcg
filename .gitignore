@@ -17,3 +17,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Cloned third-party repos kept for local reference (PPO-PyTorch, implementation-matters,
+# nash_policy_gradient_public) -- re-clone from GitHub if needed
+reference_repos/
+
+# Paper PDFs (re-fetch from arXiv: "What Matters In On-Policy Reinforcement Learning?",
+# Andrychowicz et al., arXiv:2006.05990)
+docs/ppo/*.pdf
+
+# Windows "Mark of the Web" alternate-data-stream artifacts
+*:Zone.Identifier
