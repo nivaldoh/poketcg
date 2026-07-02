@@ -373,3 +373,65 @@ Work log (lean — what's been tried/done).
 - Verified: ppo_model.py self-tests, all module imports, eval/eval_ppo/push_sweep --help, stage +
   sweep dry-runs, rendered kernel parses, a real 1-update train_ppo run through the simulated
   flat WORK layout + report on its output, run_smoketest_battle, per-commit zero-stale-ref greps.
+
+2026-07-02 (later) — post-fix gate executed: critic mechanism OK where readable; binding constraint = reward starvation vs the field; matchup-shortcut caveat on the critic
+- Why: the 7e2e2ed fix pass (linear value head, ev_true_pre gate, per_game, --opponent mix) had
+  never been run; the failure-investigation gate ("ev_true_pre >> 0 sustained on a real field run,
+  then eval_ppo matrix vs the ckpt150 anchor") was open, and the two candidate blockers (critic
+  still broken vs reward starvation) were confounded on a pure-field run: under ~7% wins a
+  constant-V predictor is near-optimal and ev_true_pre is ill-conditioned as var(g_true)->0
+  [THEORY-REVIEW]. Design: two 300-update arms differing ONLY in --opponent.
+- Code: eval_ppo.py --ckpt now accepts a comma list (per-ckpt tags by basename, summary loops all
+  tags vs baseline; single-ckpt behavior unchanged). Committed separately (74909c0). Smoked on
+  pre-fix ckpts (single + multi path).
+- Pre-flight: ppo_model.py selftest + --update-test both pass.
+- Arm 1 `ppo_fix_field` (default rulebased field, 300 upd, save-every 25):
+  ev_h (ev_true_pre) window medians: +0.02/+0.10/+0.23 (peak upd 51-75) then ~0.00-0.12 late;
+  4-12 of every 25 updates hit the var<=1e-12 zero-contrast sentinel (all-loss batches) — the
+  gate as literally written FAILS but is unreadable exactly as the T1 flag predicted. Win rate
+  flat 0.06-0.10 all 300 updates; per_game floors never move (iono 0-3 wins per ~100-game window,
+  dragapult_ex 1-5). value_mean -0.7..-0.88 = tracks the true mean return (~-0.86 at 7% wins),
+  NOT pinned (pre-fix: -0.97 pinned, holdout EV -0.013).
+- Arm 2 `ppo_fix_mix` (--opponent rulebased,random): ev_h sustained positive and RISING: window
+  medians -0.07 -> +0.13/+0.18/+0.20/+0.23 -> +0.29/+0.35 (zero sentinel windows). Critic-
+  mechanism question settled: the post-fix critic learns holdout-predictive value where contrast
+  exists (pre-fix scored BELOW 0 = worse than the mean). Policy lifts where reward exists: vs
+  random 53% -> 80% over the run; field columns stay ~floor in training (dragapult_ex 0-6 wins
+  per ~50-game window, iono 0-6, rulebased(lucario-archetype) ~10-20%, no trend).
+- CAVEAT (measured, suggestive-only bound): game-level R2 of outcome on (deck,opponent) identity
+  >= ev_h in EVERY window checked (Arm 2 late: bound 0.54 vs ev_h +0.31; Arm 1 upd 51-75: 0.21
+  vs +0.23 ~equal). All observed holdout EV is consistent with a matchup-identity critic; NO
+  evidence of within-matchup state discrimination -> plausibly near-zero within-game credit
+  assignment (with game-constant V, GAE ~ (gamma*lambda)^(T-t)*(r-c)) [THEORY-REVIEW: bound is
+  game-level/unweighted vs per-decision ev_true_pre].
+- Checkpoint curves (new multi-ckpt eval_ppo, lucario deck, n=200/cell, sampled, ckpt50..300):
+  Arm 1 mirror: 30.0/28.0/26.5/33.0/30.0/34.0% — plateau by ckpt50, FLAT (pre-fix rise-then-
+  erode signature GONE); vs dragapult_ex 0.5-2.0% dead floor.
+  Arm 2 mirror 21.0-26.0%; vs dragapult_ex 2.0-8.5% (ckpt150 8.5% CI 5-13 vs Arm 1 ckpt150 1.0%
+  CI 0-4: disjoint — reward contrast lifted the starved cell; still a floor).
+- Full 4x4 matrix, ONE invocation (n=200/cell, sampled, baseline=ppo_fix_field_init):
+  ppo_fix_field300: 4/16 cells clear baseline (lucario mirror 32.5% CI 26-39; dragapult-deck vs
+  lucario 33.0; abomasnow vs lucario 24.5; abomasnow mirror 13.0); all 16 cells <50%; vs
+  dragapult/iono columns 0-6%.
+  ppo_fix_mix150: 4/16 clear, shifted to the starved cells (abomasnow vs dragapult 15.0 CI 11-21
+  vs baseline 2.5; lucario vs iono 7.5 CI 5-12 vs 0.5; lucario vs dragapult 4.0 CI 2-8 vs 0.0;
+  abomasnow mirror 14.0) at the cost of mirrors (lucario mirror 24.0, overlaps baseline).
+  PRE-FIX anchor ppo_field150: lucario mirror 43.0 CI 36-50 (reproduces the 44.2% n=600 read) —
+  the post-fix arms did NOT surpass the pre-fix anchor's best cell (32.5 CI 26-39, CIs
+  marginally overlap); its other cells are in the same regime (4/16 clear, <50% everywhere).
+- VERDICT (decision-tree row "Arm 2 ev+ / floors don't move"): the critic fix took at the
+  mechanism level (holdout ev+ where readable, values calibrated, erosion gone) and is no longer
+  the biggest issue — but it bought no matrix-level strength. The binding constraint for the
+  majority of cells is REWARD STARVATION vs the field: 300 pure-field updates move no floor
+  cell, and the interventional arm shows reward reachability is the causal lever (mix lifts
+  starved cells 2.5->15.0 / 0.5->7.5 with disjoint CIs) while naive 50% random mixing is
+  insufficient (best starved cell 15%, mirrors decline). Separately, reward-RICH cells plateau
+  early (~30% mirror by ckpt50; training vs lucario-archetype flat ~20% for 300 upd) — leading
+  suspect is the matchup-only critic (no within-game credit), THEORY-FLAGGED, not yet tested.
+- Does NOT prove: within-matchup critic discrimination (shortcut bound covers all observed
+  ev_h); that rulebased+random is the right curriculum (contrast + data-distribution confounded);
+  why reward-rich cells plateau (credit quality vs opponent-strength gap undiscriminated).
+- Next: curriculum that manufactures wins in the starved matchups (frozen ladder of own ckpts /
+  weighted mix annealing) rather than 50% random; a within-game credit probe (log per-decision V
+  spread inside games) before trusting GAE for more than matchup baselining; optional Kaggle
+  multi-seed if any verdict cell is marginal.
