@@ -137,7 +137,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", default=os.path.join(_REPO_ROOT, "out", "ppo_final.pth"),
-                    help="trained PPO checkpoint (ActorCritic state_dict from train_ppo.py)")
+                    help="trained PPO checkpoint(s) (ActorCritic state_dict from train_ppo.py); "
+                         "comma list evaluates each, tagged by file basename (e.g. a curve)")
     ap.add_argument("--baseline", default=os.path.join(_REPO_ROOT, "out", "ppo_init.pth"),
                     help="untrained fresh-net checkpoint to anchor against (train_ppo saves {prefix}_init.pth)")
     ap.add_argument("--decks", default="all",
@@ -168,7 +169,11 @@ def main() -> int:
     model_decks = {n: load_deck(os.path.join(_REPO_ROOT, "decks", f"{n}.csv")) for n in deck_names}
     opponents = [(name, OPPONENTS[name]()) for name in opp_names]
 
-    nets = ([] if args.skip_baseline else [("baseline", args.baseline)]) + [("trained", args.ckpt)]
+    ckpt_paths = [s.strip() for s in args.ckpt.split(",") if s.strip()]
+    # Single ckpt keeps the historical "trained" tag; a list is tagged per-file (checkpoint curves).
+    ckpt_tags = (["trained"] if len(ckpt_paths) == 1 else
+                 [os.path.splitext(os.path.basename(p))[0] for p in ckpt_paths])
+    nets = ([] if args.skip_baseline else [("baseline", args.baseline)]) + list(zip(ckpt_tags, ckpt_paths))
     total = len(nets) * len(deck_names) * len(opponents) * len(modes) * args.games
     warn = "" if args.games >= 200 else "  (WARNING: <200 decisive is below the trustworthy CI floor)"
     print(f"PPO deck×opponent matrix | decks={deck_names} | opponents={opp_names} | modes={modes} | "
@@ -200,30 +205,33 @@ def main() -> int:
         for mode in modes:
             print_matrix(results[tag][mode], deck_names, opp_names, tag, mode)
 
-    # "Did training help?" per cell on the headline mode — trained CI vs baseline CI (disjoint = real).
-    if "baseline" in results and "trained" in results:
+    # "Did training help?" per cell on the headline mode — each ckpt's CI vs baseline CI (disjoint = real).
+    if "baseline" in results:
         head = "sampled" if "sampled" in modes else modes[0]
-        print(f"\n[summary] did training help? ({head} mode, trained vs baseline per cell; "
-              f"* mirror = clean skill read)", flush=True)
-        for dname in deck_names:
-            for oname, _ in opponents:
-                b = results["baseline"][head][dname].get(oname)
-                tr = results["trained"][head][dname].get(oname)
-                if b is None or tr is None:
-                    continue
-                bp, blo, bhi = b[3:6]
-                tp, tlo, thi = tr[3:6]
-                if tlo > bhi:
-                    verdict = "CLEARS baseline"
-                elif thi < blo:
-                    verdict = "REGRESSED"
-                else:
-                    verdict = "overlap (indistinguishable)"
-                kind = "mirror*" if dname == oname else "confounded"
-                print(f"  {dname:12s} vs {oname:12s} [{kind:10s}]: "
-                      f"baseline {100 * bp:5.1f}% ({100 * blo:.0f}-{100 * bhi:.0f}) -> "
-                      f"trained {100 * tp:5.1f}% ({100 * tlo:.0f}-{100 * thi:.0f}) "
-                      f"[Elo {_fmt_elo(tp)}] -> {verdict}", flush=True)
+        for tag in results:
+            if tag == "baseline":
+                continue
+            print(f"\n[summary] did training help? ({head} mode, {tag} vs baseline per cell; "
+                  f"* mirror = clean skill read)", flush=True)
+            for dname in deck_names:
+                for oname, _ in opponents:
+                    b = results["baseline"][head][dname].get(oname)
+                    tr = results[tag][head][dname].get(oname)
+                    if b is None or tr is None:
+                        continue
+                    bp, blo, bhi = b[3:6]
+                    tp, tlo, thi = tr[3:6]
+                    if tlo > bhi:
+                        verdict = "CLEARS baseline"
+                    elif thi < blo:
+                        verdict = "REGRESSED"
+                    else:
+                        verdict = "overlap (indistinguishable)"
+                    kind = "mirror*" if dname == oname else "confounded"
+                    print(f"  {dname:12s} vs {oname:12s} [{kind:10s}]: "
+                          f"baseline {100 * bp:5.1f}% ({100 * blo:.0f}-{100 * bhi:.0f}) -> "
+                          f"{tag} {100 * tp:5.1f}% ({100 * tlo:.0f}-{100 * thi:.0f}) "
+                          f"[Elo {_fmt_elo(tp)}] -> {verdict}", flush=True)
     return 0
 
 
