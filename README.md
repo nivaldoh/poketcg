@@ -134,19 +134,35 @@ Key caveats (printed by the tool; from `docs/eval_info.md`):
 - **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.
 - **High outcome variance** → wide CIs at small n; raise `--games`. Win% excludes draws (reported separately).
 
-**Current standing (2026-06-29, `--mode gauntlet`, n=200, MCTS search-count 4):** our trained checkpoints **lose to all four rule-based agents** — Lucario / Abomasnow / Dragapult / Iono, win rates only **4–34%**, including the least deck-confounded *near-mirror* vs Abomasnow (`sample_deck` ≈ the Abomasnow archetype) — so the hand-written heuristics are still clearly ahead, and the loss is a genuine skill gap, not just the deck matchup. On the clean *skill* axis (mirror vs the frozen `model0` anchor), the NashPG finals (`nashpg_a0_final`, `nashpg_a02_final`) **do beat** the untrained init (~60–61%, CIs exclude 50%) and are statistically indistinguishable from each other, while the older `mixed_final` *regressed* below it (39.5%). Net: NashPG self-play improves over the init but the policy is still weak in absolute terms.
+**Current standing:** volatile — read it from the tools, not this file. Run `python eval.py --mode gauntlet --checkpoint out/<ckpt>.pth` (one checkpoint vs the frozen anchor + the rule-based field) or `TORCHDYNAMO_DISABLE=1 python eval_ppo.py` (PPO deck×opponent matrix); dated verdicts live in `work_log.txt` and the memory notes. Standing headline so far: the hand-written rule-based agents remain ahead of every trained checkpoint.
 
 **Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `docs/eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `docs/eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
 
 # Training
 
-Two sources of training data. Only self-play is wired up today.
+Two trainer generations plus an unwired data source. The **active** stack is the from-scratch PPO
+(`train_ppo.py`); the original MCTS self-play starter is kept as legacy reference.
 
-## 1. Self-play (implemented but needs to be updated)
+## 1. PPO from scratch (active): `train_ppo.py`
+
+A clean-room PPO stack, independent of `MyModel`/MCTS: `ppo_model.py` (fresh ActorCritic net +
+clipped update; `python ppo_model.py` and `python ppo_model.py --update-test` are its self-tests),
+`train_ppo.py` (game collection + GAE + updates; the default opponent is the rule-based field on
+its own decks, so the training field equals the eval field), and `eval_ppo.py` (deck × opponent
+matrix with Wilson CIs against the saved `_init` baseline). Read the file docstrings and `--help`
+for the contract; run history and verdicts live in `work_log.txt` and `docs/ppo/`
+(`ppo_ceiling_report.md`, `ppo_failure_investigation.md`).
+
+Fast local smoke (a couple of tiny updates, writes checkpoints + metrics jsonl under `out/`):
+```bash
+python train_ppo.py --updates 2 --games-per-update 4
+```
+
+## 2. Legacy self-play starter (`starter_rl_kaggle.py`)
 
 `starter_rl_kaggle.py` is a working RL+MCTS self-play trainer. Per iteration it:
 - runs the `battle_start → battle_select → battle_finish` loop;
-- drives MCTS via the Search API (`search_begin/search_step/search_end`), *determinizing* the opponent's hidden cards (samples your own deck/prize from known IDs, fills opponent slots with placeholders — Snorlax `1072`, basic energy `1`);
+- drives MCTS via the Search API (`search_begin/search_step/search_end`), *determinizing* the opponent's hidden cards (mirror determinization: opponent deck/hand sampled from *your own* deck list, basic-energy `1` placeholders for hidden prizes, Riolu `677` for a face-down active — `grep -n "search_begin" tcg_model.py`);
 - emits `LearnSample`s (a scalar **value** + per-action **policy** + sparse encoder/decoder vectors); targets come from MCTS visit stats and a TD(λ=0.9) backup of the game result;
 - trains the Transformer and checkpoints to `out/modelN.pth` (saved at the *start* of iteration N, so `modelN` is the model *before* iteration N's updates).
 
@@ -165,7 +181,7 @@ python starter_rl_kaggle.py --load out/model1.pth --out-prefix mixed \
     --iterations 3 --eval-games 6 --selfplay-games 20 --search-count 8 --batch-size 32
 ```
 
-## 2. Episode replays / ladder data (available, not yet wired up)
+## 3. Episode replays / ladder data (available, not yet wired up)
 
 Top-ladder games can be pulled from Kaggle for behavior cloning / imitation learning. Auth is already configured (the `kaggle` CLI v2.2.2 reads `~/.kaggle/access_token`). The chain (competition `pokemon-tcg-ai-battle`):
 ```bash
@@ -184,7 +200,7 @@ Already fetched locally (all under gitignored `data/`): a sample replay `data/re
 
 # Running heavy jobs on Kaggle (operational lessons)
 
-Local hardware is small (WSL2), so heavy training/eval is offloaded to Kaggle script-kernels (infra: `kaggle/push_sweep.py`). Lessons from the NashPG BR-exploitability sweep (`nashpg_br_sweep_report.md`):
+Local hardware is small (WSL2), so heavy training/eval is offloaded to Kaggle script-kernels (infra: `kaggle/push_sweep.py`). Lessons from the NashPG BR-exploitability sweep (`work_log.txt`, 2026-06-29 entry):
 
 - **Concurrency cap:** Kaggle runs at most **5 concurrent batch CPU sessions**. We pushed 12 kernels at once; the extra 7 were rejected with a session-cap error. **Push in waves of ≤5** and plan the matrix around that cap rather than firing everything at once.
 - **Zombie kernels:** rejected/failed pushes can leave **empty "zombie" kernel records**; re-pushing to those same slugs then fails with a misleading `Notebook not found`. **Use a distinct slug per job** so a failed push doesn't poison the slug.

@@ -49,15 +49,17 @@ Files:
 |---|---|---|
 | `tcg_model.py` | the **brain** | turns an obs into features, runs `MyModel`, and wraps it as `mcts_agent` / `random_agent`; also holds `sample_deck`. |
 | `utils/run_smoketest_battle.py` | the **driver** | plays one battle start→finish with `random_agent`; the smallest "engine works" test. |
-| `train_nashpg.py` | **training** (active) | self-play NashPG; updates `MyModel`, saves `out/<prefix>*.pth`. |
-| `starter_rl_kaggle.py` | training (older) | RL + MCTS self-play; the original trainer. |
-| `train_reinforce.py` | training (experiment) | plain REINFORCE; tried, regressed. |
+| `train_ppo.py` (+ `ppo_model.py`, `eval_ppo.py`) | **training** (active) | clean-room PPO vs the rule-based field; independent of `MyModel` (see the file docstrings). |
+| `train_nashpg.py` | training (retired) | self-play NashPG; superseded by `train_ppo.py` (removed — git history). |
+| `starter_rl_kaggle.py` | training (legacy) | RL + MCTS self-play; the original trainer. |
+| `train_reinforce.py` | training (retired) | plain REINFORCE; tried, regressed (removed — git history). |
 | `eval.py` | **scoring** | pits two agents head-to-head and reports win rates + CI + Elo. |
 | `eval_mymodel.py`, `eval_agreement.py` | scoring (extra) | mirror win-rate / move-agreement signals. |
 | `kaggle/push_sweep.py` | **offload** | ships code + checkpoints to Kaggle to run heavy jobs. |
 
 Where each loads its deck: `utils/run_smoketest_battle.py` reads a CSV (`--deck`, default `deck.csv`);
-`train_nashpg.py` & `eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`);
+`eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`); `train_ppo.py` /
+`eval_ppo.py` load `decks/<name>.csv` per `--decks`;
 `eval_mymodel.py` & `eval_agreement.py` read `deck.csv` (the Lucario deck).
 
 ---
@@ -304,16 +306,20 @@ STEP · pick + finish
 ```
 
 *Accuracy note:* the determinization above is the **live code** (mirror sampling + Riolu `677` +
-energy `1`). An older note in `docs/cg-sdk.md` mentions a Snorlax `1072` placeholder — that's
-stale; the current code switched to mirror determinization because the old fill misjudged the
-opponent. (`grep -n "search_begin\|677\|random.sample" tcg_model.py`.)
+energy `1`), and `docs/cg-sdk.md` describes the same scheme.
+(`grep -n "search_begin\|677\|random.sample" tcg_model.py`.)
 
 </details>
 
 </details>
 
 <details>
-<summary><b>▸ Flow 4 · Training</b> — self-play games → a better MyModel</summary>
+<summary><b>▸ Flow 4 · Training (legacy MyModel trainers)</b> — self-play games → a better MyModel</summary>
+
+**This whole flow is historical**: all three MyModel trainers below are retired or legacy; the
+active trainer is `train_ppo.py` (a separate, fresh-net PPO stack — see its docstring and
+`ppo_model.py`). Kept because the shared spine and the act-function evolution still explain the
+codebase's story.
 
 There are three trainers. They share **one spine**: play battles with the current model, then use
 who-won to nudge the model, then save a checkpoint.
@@ -336,7 +342,8 @@ mcts_agent      ->   act_sample        ->   act_collect
                                              info PPO needs: old_logp + V_old)
 ```
 
-`train_nashpg.py` is the **active** trainer; boxes 4a/4b zoom into it. 4c covers the other two.
+`train_nashpg.py` was the last MyModel trainer (retired; removed — git history); boxes 4a/4b zoom
+into it. 4c covers the other two.
 
 <details>
 <summary>▸ 4a · NashPG — the outer / inner / reset loop (train_nashpg.py)</summary>

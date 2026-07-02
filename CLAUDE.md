@@ -21,12 +21,13 @@ No test framework yet. `vendor/`, and `out/` are gitignored.
 ## Modules
 
 - `tcg_model.py` — the **reusable model/agent layer**, extracted from the trainer so tools can import it without launching training: `MyModel` (Transformer: encoder = value, decoder = policy), the sparse encoder/decoder feature builders, `mcts_agent`, `random_agent`, and `sample_deck`.
+- `ppo_model.py` / `train_ppo.py` / `eval_ppo.py` — the **active training stack**: a clean-room PPO (fresh ActorCritic net, independent of `MyModel`), its trainer (default opponent = the rule-based field), and its deck×opponent matrix eval. Self-tests: `python ppo_model.py` / `--update-test`.
 - `eval.py` — (see README "Eval harness").
 - `game_agents/rulebased/<deck>.py` — the heuristic agents, **one clean importable module per deck**: `lucario` (Mega Lucario ex), `abomasnow` (Mega Abomasnow ex), `dragapult_ex`, `iono` (Iono's Bellibolt/Voltorb). The reusable part of each is `agent()` and its scoring heuristics; each also exposes `my_deck` (its 60-card list). `eval.py` / `starter_rl_kaggle.py` add `game_agents/rulebased/` to `sys.path` and import them by bare name.
 
 ## The starter files
 
-`starter_rl_kaggle.py` is a **Kaggle-notebook export, not a plain module** (it opens with `%%writefile main.py` and ends by building `submission.tar.gz`): RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports.
+`starter_rl_kaggle.py` is a **Kaggle-notebook export, not a plain module** (it opens with `%%writefile main.py` and ends by building `submission.tar.gz`): RL + MCTS self-play training (Transformer: encoder = value, decoder = policy). Adapted to run locally (CLI flags, local `cg` path); the model/agent code now lives in `tcg_model.py`, which it imports. It is the **legacy** trainer — active training is `train_ppo.py`.
 
 Each rule-based agent (`game_agents/rulebased/<deck>.py`) loads its own 60-card deck from `decks/<name>.csv` (committed; the repo-root `decks/` is two levels up from the module), falling back to `deck.csv` then the Kaggle `/kaggle_simulations/agent/deck.csv` at submission time. Root `deck.csv` (gitignored, = the Lucario list, mirrors `decks/lucario.csv`) stays the learner-side default for the training/eval scripts.
 

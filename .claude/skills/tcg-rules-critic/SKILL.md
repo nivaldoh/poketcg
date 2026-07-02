@@ -42,7 +42,7 @@ corrected statement if the claim was wrong. Cite the heading, not a line number 
 headings don't.
 
 ## Single source of truth + known duplicates
-- Canonical rules: **`docs/rulebook.md`** (extracted by `extract_rulebook.py` from `rulebook.pdf`).
+- Canonical rules: **`docs/rulebook.md`** (extracted from the official rulebook PDF; the extraction script is gone — git history has it).
 - Deck-legality is also paraphrased in `CLAUDE.md`; card IDs / decks also live in memory
   `poketcg-card-ids-and-decks`. Those are copies — reconcile them against `docs/rulebook.md` +
   `all_card_data()`; don't treat a copy as authoritative.

@@ -62,9 +62,9 @@ def greedy_agent(obs_dict, deck, model):
     return [int(max(range(n_opt), key=lambda i: policy[i]))]
 
 
-# The codebase's fixed policy convention: logits ≡ decoder_out × 10 (MCTS uses exp(p·10)),
-# so π = softmax(10·tanh(decoder_out)). SINGLE SOURCE OF TRUTH — train_nashpg imports this so
-# its act-time / update-time / eval-time distributions stay identical (PPO ratio correctness).
+# The codebase's fixed MyModel policy convention: logits ≡ decoder_out × 10 (MCTS uses exp(p·10)),
+# so π = softmax(10·tanh(decoder_out)). The retired NashPG trainer imported this as its single
+# source of truth; today it only feeds sampled_agent below.
 LOGIT_SCALE = 10.0
 
 
