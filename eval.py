@@ -172,35 +172,6 @@ def wilson(wins: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
     return (p, max(0.0, center - half), min(1.0, center + half))
 
 
-def fit_elo(names: list[str], wins: dict) -> dict:
-    """Rough Bradley-Terry / Elo fit from pairwise decisive-win counts.
-
-    `wins[(i, j)]` = times agent i beat agent j. Mean-anchored, with a light L2
-    prior so perfect win/loss records (common vs random) don't run to +/-inf.
-    Returns {name: elo}. This is a coarse summary, not a calibrated rating.
-    """
-    n = len(names)
-    idx = {nm: k for k, nm in enumerate(names)}
-    r = [0.0] * n
-    for _ in range(3000):
-        grad = [0.0] * n
-        for (wi, wj), w in wins.items():
-            i, j = idx[wi], idx[wj]
-            nij = w + wins.get((wj, wi), 0)
-            if nij == 0:
-                continue
-            pij = 1.0 / (1.0 + math.exp(-(r[i] - r[j])))
-            grad[i] += w - nij * pij
-        for i in range(n):
-            grad[i] -= 0.01 * r[i]          # L2 prior toward 0 (keeps it finite)
-            r[i] += 0.05 * grad[i]
-        m = sum(r) / n                       # anchor mean to 0
-        for i in range(n):
-            r[i] -= m
-    scale = 400.0 / math.log(10.0)
-    return {nm: r[idx[nm]] * scale for nm in names}
-
-
 # --- reproducibility + reliable-comparison helpers (see EVAL.md "Reliable A/B comparison") ---
 
 def sha256(path: str) -> str:
@@ -236,9 +207,11 @@ def elo_from_winrate(p: float) -> float:
 
 
 def anchored_elo(names: list[str], wins: dict, anchor: str) -> dict:
-    """Like fit_elo but pegs `anchor` to 0 every iteration instead of mean-anchoring the pool,
-    so a checkpoint's rating is COMPARABLE ACROSS RUNS (mean-anchoring makes it depend on who else
-    happened to be in the pool). Same light L2 prior keeps saturated records finite."""
+    """Rough Bradley-Terry / Elo fit from pairwise decisive-win counts (`wins[(i, j)]` = times
+    agent i beat agent j), pegging `anchor` to 0 every iteration so a checkpoint's rating is
+    COMPARABLE ACROSS RUNS (mean-anchoring would make it depend on who else happened to be in the
+    pool). A light L2 prior keeps saturated records (common vs random) finite. Coarse summary,
+    not a calibrated rating."""
     n = len(names)
     idx = {nm: k for k, nm in enumerate(names)}
     a = idx[anchor]

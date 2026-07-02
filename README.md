@@ -128,7 +128,7 @@ python eval.py --mode gauntlet --checkpoint out/nashpg_a0_final.pth   # one ckpt
 What it does (`eval.py`, built on `tcg_model.py` + `game_agents/rulebased/lucario.py`):
 - **Agents:** `random`, `rulebased` (Mega-Lucario, plays `deck.csv`), and any checkpoint (`MyModel` + `mcts_agent`, plays `sample_deck`). Defaults compare `out/mixed_final.pth` vs `out/model0.pth`.
 - **`play_match`** alternates seats every game (cancels first-player advantage) and routes each decision by `obs.current.yourIndex`.
-- **Reports** W/L/D, win% over *decisive* games with a **95% Wilson CI**, and a mean-anchored Bradley-Terry **Elo**. Cheap model-free matchups run with `--baseline-games` (default 200) for tight CIs; model matchups use `--games`.
+- **Reports** W/L/D, win% over *decisive* games with a **95% Wilson CI**, and an anchored Bradley-Terry **Elo** (a stable pool agent pegged to 0). Cheap model-free matchups run with `--baseline-games` (default 200) for tight CIs; model matchups use `--games`.
 
 Key caveats (printed by the tool; from `docs/eval_info.md`):
 - **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.

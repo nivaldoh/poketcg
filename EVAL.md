@@ -86,8 +86,8 @@ memory (numbers).
 | `eval_mymodel.py` | is the BC `MyModel` any good on a clean skill test? | Lucario **mirror** (same deck both sides); set `TORCHDYNAMO_DISABLE=1` | mirror ≈ 50/50, so the value head barely learns |
 | `eval_ppo.py` | did PPO training help, per cell? | 4 decks × 4 rule-based opponents, seat-swapped; diagonal = clean mirror | verdict = trained CI vs `_init` baseline CI (fresh net is not 50%); off-diagonal cells deck-confounded |
 
-Both report W/L/D, win% over decisive games with a 95% Wilson CI, and seat-swap. `eval.py` adds a
-mean-anchored Bradley-Terry Elo over the pool; `eval_mymodel.py` prints its own win-rate targets
+Both report W/L/D, win% over decisive games with a 95% Wilson CI, and seat-swap. `eval.py` adds an
+anchored Bradley-Terry Elo over the pool (a stable agent pegged to 0); `eval_mymodel.py` prints its own win-rate targets
 (e.g. ≥48% ≈ strong, >50% beats the teacher) — read them off the tool, they may move.
 
 **What we currently believe** (hedged — verify at n≥200, don't trust stale figures):

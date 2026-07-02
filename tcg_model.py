@@ -21,7 +21,6 @@ import sys
 import torch
 import torch.nn
 import torch.nn.functional
-import torch.optim
 
 # Local run: the proprietary `cg` simulator is vendored under vendor/cg-lib/
 # (downloaded from the Kaggle competition; see README/CLAUDE.md). Override with
