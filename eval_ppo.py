@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Eval a self-play-trained PPO ActorCritic across a DECK×OPPONENT matrix: the model plays EACH of
-the 4 game decks (lucario, abomasnow, dragapult_ex, iono) against EACH of the 4 rule-based opponents
-(each on its OWN deck), seat-swapped, with 95% Wilson CIs.
+"""Eval a train_ppo.py-trained PPO ActorCritic across a DECK×OPPONENT matrix: the model plays EACH
+of the 4 game decks (lucario, abomasnow, dragapult_ex, iono) against EACH of the 4 rule-based
+opponents (each on its OWN deck), seat-swapped, with 95% Wilson CIs. NOTE: train_ppo's default
+opponent is now this same rule-based field, so the matrix is then an IN-DISTRIBUTION eval
+(deliberate — beating this field is the project goal), not a generalization test.
 
 The matrix DIAGONAL (model on deck-X vs the rule-based agent that also plays deck-X) is a clean
 MIRROR — same deck both seats — so it isolates policy skill from deck strength. OFF-DIAGONAL cells

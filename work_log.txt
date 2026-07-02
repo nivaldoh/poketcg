@@ -180,3 +180,95 @@ Work log (lean — what's been tried/done).
   independent scoring + downstream pad/mask, and the same-type-collision discriminability caveat.
 - VERIFIED: `python train_ppo.py --help` still builds. Design rationale + worked example captured in
   plan ~/.claude/plans/help-me-figure-out-tingly-kitten.md.
+2026-07-01 — eval_ppo.py: PPO now plays sample_deck vs the rule-based OPPONENT FIELD (not just random).
+- WHY: eval_ppo only scored the sample_deck mirror vs random (eval_mymodel.play -> battle_start(deck,deck),
+  one deck both seats). Wanted "how does the trained policy fare against the field?" — PPO's fixed deck vs
+  each of the 4 rule-based agents, each on its OWN archetype deck. User chose: opponents play own decks
+  (deck-confounded, matches eval.py's gauntlet FIELD); default sweep = both nets (baseline+trained), sampled.
+- HOW (pure reuse, no new battle loop): wired eval_ppo into eval.py's two-deck machinery — Agent,
+  play_match/_play_one (battle_start(decks[0],decks[1]), seat-swapped, each Agent brings its own deck),
+  wilson, elo_from_winrate, make_random/make_rulebased/make_abomasnow/make_dragapult/make_iono. PPO net
+  wrapped as eval.Agent via train_ppo.policy_agent (deck-agnostic -> plays any deck unmodified). Dropped the
+  eval_mymodel.play import (single-deck mirror can't do asymmetric decks).
+- NEW flags: --opponents {random,lucario,abomasnow,dragapult,iono}|all (default all); --modes sampled[,greedy]
+  (default sampled). OPPONENTS registry (name->factory); run_match reseeds random per cell (play_match doesn't,
+  unlike old play()) for stream comparability. Per-opponent "did training help?" summary: trained vs baseline
+  CIs (disjoint=real move / overlap=indistinguishable), deck-confounded/mirror-floor label + implied Elo.
+- CAVEATS surfaced in docstring/comments: deck-confounded win-rates mix skill+matchup; PPO card-embeddings
+  only trained on sample_deck cards so opponents' off-deck cards hit untrained rows (typed features still carry
+  signal). Only file changed; eval.py/train_ppo.py/ppo_model.py/rulebased modules untouched.
+- VERIFIED (plumbing, small-n only — eval-discipline: trust CIs at n>=200): --opponents random --games 30
+  preserves the mirror floor (trained 90.0% clears baseline 53.3%, CIs disjoint; matches recorded ~87% vs
+  random). --opponents all --games 20 runs all 4 rule-based decks with NO deck-rejection/crash, one row/opp
+  both nets. --help renders; --modes sampled,greedy exercises the greedy/argmax path.
+
+2026-07-01 — PPO self-play CEILING investigation (no code changes; report out/ppo_ceiling_report.md).
+- GOAL: push PPO further from self-play cold-start, find the ceiling for the CURRENT architecture, explain why.
+- RAN (all local CPU — CUDA_VISIBLE_DEVICES= is FASTER + lighter than cuda for this tiny model, GPU transfer
+  latency dominates; box RAM-bound ~1.6GB free, swap exhausts at 3+ procs -> ran <=2 concurrent): headline
+  self-play 800 updates x2 seeds (ppo_sp_s0/s1); sweep ent-coef 0.03 & lr 1e-4 (500u); opponent random & frozen
+  (500u); anchor eval of the prior 100u ppo_selfplay_final.
+- CEILING: best clean mirror lucario 32.5% (n=200, CI 26-39); abomasnow ~17-23%; dragapult ~3-5% FLOOR; iono
+  ~1-4% FLOOR. Loses ALL 16 deck×opponent cells (2-32.5%). Plateaus by ~200-400 updates — 8x longer training
+  (800u) adds nothing vs the field. Reproducible across both seeds.
+- WHY (each measured, not asserted):
+  1. NOT coverage — decision-coverage probe: the net controls 80.3% of decision nodes (89% of non-forced);
+     only 19.7% auto_resolve (mostly forced-single). Refutes the "auto_resolve does the heavy lifting" prior.
+  2. NOT capacity — vs the RANDOM floor it climbs 18%->76% on every deck (learns generic competence).
+  3. NOT length/hyperparams — plateaus early; ent0.03 / lr1e4 / games stay in the same envelope.
+  4. Self-play NON-TRANSFER (dominant): on dragapult/iono it crushes random (33-73%) yet scores ~0-5% vs the
+     rule-based agent on the SAME deck — the symmetric mirror equilibrium never discovers the counters. No
+     opponent regime (self/random/frozen) transfers to beating the field.
+  5. BROKEN CRITIC: explained_var stays ~0.05-0.20 for all 800 updates (value can't fit the ~50/50 mirror under
+     terminal-only +-1 reward + coarse credit) -> advantages dominated by noise -> weak PG, early plateau.
+- FIX LEVERS (documented, NOT implemented — out of scope): train vs the rule-based field directly / league
+  (biggest lever, needs the deferred rulebased opponent + asymmetric-deck driver); denser reward / GAE(lambda)
+  for the critic; opponent curriculum / lagged-snapshot. Larger net is low priority (capacity isn't binding).
+- ARTIFACTS: out/ppo_ceiling_report.md, ppo_curve_s{0,1}.log, ppo_matrix_sp_final.log, ppo_anchor_summary.txt,
+  ppo_finals_eval.log, ppo_frozen_final_eval.log, ppo_{sp_s,sw_,opp_}*.log. Throwaway probes (scratchpad,
+  read-only): coverage_probe.py, curve_eval.py.
+
+2026-07-02 — PPO main-issue fixes: rule-based FIELD training + GAE(lambda)/gamma=1.0 + minibatching.
+- WHY (both MEASURED in out/ppo_ceiling_report.md): (1) self-play NON-TRANSFER (dominant — crushes
+  random, loses all 16 cells vs the field) and (2) BROKEN CRITIC (explained_var ~0.1 for 800
+  updates under terminal-only +-1 + pure MC returns); plus approx_kl ~0.001 (policy barely moved,
+  4 full-batch steps/update). References: docs/ppo (ICLR 37-details #5/#6/#7; "What Matters"
+  §3.4/§3.5 — GAE yes, value-clipping NO/hurts), reference_repos/implementation-matters (GAE with
+  not_dones masking, per-minibatch adv norm), NashPG (SAME reward shape: gamma=1.0, lambda=0.95,
+  4x4 minibatches). Value clipping deliberately NOT added.
+- FIX A (train_ppo.py): --opponent rulebased is the new DEFAULT — make_opponent now returns a
+  per-game provider next_opponent() -> (opp_fn, opp_deck|None); rulebased samples one of the 4
+  archetypes per game (reuses eval.py make_rulebased/make_abomasnow/make_dragapult/make_iono),
+  opponent plays ITS OWN deck; collect_games got asymmetric-deck battle_start (eval._play_one
+  seat pattern; None deck = mirror, so self/random/frozen unchanged). DELIBERATE: training field
+  == eval_ppo field (in-distribution eval; the goal is beating exactly this field). Collect
+  win-rate is now a genuine progress signal (still ~50%-by-construction under --opponent self).
+- FIX B (ppo_model.py): GAE(lambda) advantages + TD(lambda) value targets replace MC returns in
+  PPO.update (backward recursion, gae/next_v reset at is_terminals so nothing bootstraps past a
+  game end; single-step episodes degenerate to the old MC target exactly). New PPO kwargs
+  gae_lambda=0.95, minibatches=4; CLI --gae-lambda; --gamma default 0.99 -> 1.0 (NashPG precedent,
+  THEORY-REVIEW FLAG). Raw-target/tanh-value-head coupling preserved: lambda-return is a convex
+  combination of n-step targets bounded by max(|r|,|V|)<=1 (theory-flagged in comments).
+- FIX C (ppo_model.py): K epochs x M shuffled minibatches (randperm.chunk), advantage norm moved
+  PER-MINIBATCH; n_mb = max(1, min(minibatches, B//2)) guard is LOAD-BEARING (std() of 1 elem =
+  NaN; B=2 update-test degenerates to full batch = old behavior). Telemetry semantics: ratio_dev_e0
+  from a dedicated PRE-update full-batch no_grad pass; all other stats from a POST-update full-batch
+  no_grad pass (STATS_KEYS tuple unchanged; jsonl consumers unaffected).
+- VERIFIED: python ppo_model.py + --update-test green (no test edits needed); --help builds;
+  3-update rulebased smoke + 2-update self/random smokes clean (no ratio_dev_e0 WARN, jsonl keys +
+  return bounds intact). 300-update run (out/ppo_field_train.log, ppo_field_metrics.jsonl —
+  FIRST real exercise of the e1c8a07 telemetry): explained_var -0.24 -> ~0.5-0.6 SUSTAINED (critic
+  fix confirmed; was stuck ~0.1), value_mean ~ -0.8 calibrated to the ~10% win-rate return mix,
+  approx_kl ~0.008 / clip_frac 5-12% (policy moving; was ~0.001/~0), ratio_dev_e0 max 7.6e-6,
+  returns exactly in [-1,1]. CAVEAT: collect win-rate vs the field stayed flat ~8-12% over 300
+  updates — the optimization is healthy but 300 updates didn't yet lift play strength vs the
+  heuristics; n=200 eval matrix (ppo_field_final vs ppo_field_init) = the definitive read.
+- EVAL (n=200/cell, sampled, out/ppo_field_eval.log; ppo_field_final vs ppo_field_init): training
+  now HELPS at the matrix level — 3/16 cells CLEAR the baseline with disjoint CIs: lucario mirror
+  12.5% -> 36.5% (30-43) — at/above the historical best cell EVER (32.5% after 800 self-play
+  updates, CIs overlap so "comparable-or-better in 300 updates"); abomasnow mirror 2% -> 15%
+  (11-21); abomasnow-deck vs lucario 7.5% -> 20.5%. Broad upward trend vs lucario/abomasnow
+  opponents. STILL FLOOR vs dragapult_ex/iono opponents (0-7%, indistinguishable — the known
+  hard-heuristic floor) and still <50% in all 16 cells: the fix repaired the OPTIMIZATION
+  (critic + step size + training distribution), not yet the strength gap vs the strong decks.
+  Next levers: longer runs, opponent mixing/curriculum, and (deferred) multi-select coverage.
