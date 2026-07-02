@@ -54,13 +54,13 @@ Files:
 | `starter_rl_kaggle.py` | training (legacy) | RL + MCTS self-play; the original trainer. |
 | `train_reinforce.py` | training (retired) | plain REINFORCE; tried, regressed (removed — git history). |
 | `eval.py` | **scoring** | pits two agents head-to-head and reports win rates + CI + Elo. |
-| `eval_mymodel.py`, `eval_agreement.py` | scoring (extra) | mirror win-rate / move-agreement signals. |
+| `eval_mymodel.py` | scoring (extra) | Lucario-mirror win-rate signal for the BC `MyModel`. |
 | `kaggle/push_sweep.py` | **offload** | ships code + checkpoints to Kaggle to run heavy jobs. |
 
 Where each loads its deck: `utils/run_smoketest_battle.py` reads a CSV (`--deck`, default `deck.csv`);
 `eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`); `train_ppo.py` /
 `eval_ppo.py` load `decks/<name>.csv` per `--decks`;
-`eval_mymodel.py` & `eval_agreement.py` read `deck.csv` (the Lucario deck).
+`eval_mymodel.py` reads `deck.csv` (the Lucario deck).
 
 ---
 
@@ -537,18 +537,15 @@ sprt                a sequential ship/no-ship A/B test of two checkpoints — st
                     evidence is decisive. e.g. "VERDICT: ACCEPT H1 — model:A is BETTER (ship)."
 ```
 
-The other two eval tools:
+The other eval tool:
 ```
 eval_mymodel.py    Lucario MIRROR (deck.csv both sides, search-count 10); "is this checkpoint any
                    good on a clean skill test?"  -> win% + CI per agent×opponent cell.
-eval_agreement.py  NO battles — for each of a frozen, held-out set of teacher decisions, run ONE
-                   forward pass and check top-1 / top-k agreement with the teacher's choice.
-                   Low-variance, separates near-identical checkpoints.
 ```
 
-Watch the **deck axis**: `eval.py` model-agents play `sample_deck`; `eval_mymodel.py` /
-`eval_agreement.py` play `deck.csv` (Lucario). Win rates across different decks (or different
-`--search-count`) aren't comparable — lock both when comparing.
+Watch the **deck axis**: `eval.py` model-agents play `sample_deck`; `eval_mymodel.py` plays
+`deck.csv` (Lucario). Win rates across different decks (or different `--search-count`) aren't
+comparable — lock both when comparing.
 
 </details>
 

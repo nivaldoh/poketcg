@@ -105,7 +105,7 @@ Kaggle ladder**.
 ## 5. Reliable A/B comparison (the approach)
 
 Answering "did it get better?" credibly is mostly experimental design. The obvious variance-killer is
-unavailable, so reliability rests on three feasible levers + a manifest.
+unavailable, so reliability rests on two feasible levers + a manifest.
 
 **Common random numbers are impossible here.** Replaying the same shuffle/coin-flips for A and B (so
 luck cancels in the difference) would be the biggest variance reducer — but the `cg` engine seeds its
@@ -121,7 +121,6 @@ paired / McNemar designs are out. *Self-checkable:* two battles with identical d
 |---|---|---|
 | a **large** change (help / regress) | gauntlet win-rates + SPRT | big effects resolve at feasible `n` |
 | comparability **over time** | frozen gauntlet → one scalar + anchored Elo + manifest | numbers stop moving with the baseline |
-| a change between **near-identical** ckpts | held-out move-agreement (`eval_agreement.py`) | win-rate would need ~800–5000 games |
 
 **Minimum detectable effect** (decisive games to see a win-rate vs 50%, α=.05 / 80% power): 55%→~780,
 60%→~190, 65%→~80, 70%→~40. So `--games 20` only sees ≥~25-pt gaps, and two ~50/50 mirror checkpoints
@@ -133,7 +132,7 @@ fixed, **hash-pinned** opponent set: `random` (floor; saturates), the frozen anc
 **SKILL** axis, a clean mirror), and the teacher (large-effect **yardstick**, deck-confounded). The
 headline scalar = win% (and implied Elo) vs the frozen anchor — track it across checkpoints. All model
 agents play `sample_deck` (via `make_model`), so this is the *sample_deck* skill axis — a Lucario-deck
-BC checkpoint belongs in `eval_agreement.py` / `eval_mymodel.py` (which use `deck.csv`), not here. Pin
+BC checkpoint belongs in `eval_mymodel.py` (which uses `deck.csv`), not here. Pin
 the anchor by **content hash**, not filename (`out/` is gitignored, names get reused). Anchor = the
 frozen-strongest `model0`, `out/anchor_model0.pth`, sha256
 `5bf4b8ae0cc977dfb98f3a915d994990979d2db6e4ad4a61e5dd99396f8c4122`. Re-running anchor-vs-random over
@@ -145,13 +144,10 @@ ratio crosses a bound (accept "better" / "not better") or hit `--max-games`. Con
 at the **fewest games** — terminates fast on a large effect, returns "inconclusive" only on a genuine
 coin-flip. H0/H1 are Elo gaps (`--sprt-elo0` / `--sprt-elo1`, default `0` vs `+10`).
 
-**Move-agreement — the cheap, low-variance signal** — `TORCHDYNAMO_DISABLE=1 python eval_agreement.py
---ckpts A,B`. Top-1/top-k agreement of a checkpoint's greedy policy with the teacher over a **frozen,
-held-out** set of teacher decisions. One forward pass per decision (no games, no engine, no search), so
-its Wilson CI shrinks far faster than win-rate and it can separate near-identical checkpoints. It's
-imitation fidelity to a non-optimal reference (treats a small deviation like a blunder) → read it
-**with** the outcome metrics, not instead of them. The set is built once and frozen (the engine RNG is
-unseedable, so it can't be regenerated identically) and is **never used in training**.
+*(Retired: a held-out move-agreement harness, `eval_agreement.py`, once filled the
+near-identical-checkpoint niche — one forward pass per frozen teacher decision, so its CI shrank far
+faster than win-rate. It depended on the deleted BC-teacher tooling and was removed; git history has
+it. Today near-identical checkpoints are simply unresolvable — judge on the large-effect axes.)*
 
 **The comparability contract.** Every `eval.py` run prints a JSON **manifest**; two runs compare only
 if it matches — checkpoint sha256s, `--search-count`, decks, `n`, draw rate, torch version / device /
@@ -203,7 +199,6 @@ python eval.py                                   # default sanity battery
 python eval.py --mode gauntlet --checkpoint out/X.pth        # X vs the frozen anchor -> comparable scalar
 python eval.py --mode sprt --checkpoint out/A.pth --baseline-checkpoint out/B.pth  # is A > B? (controlled)
 python eval.py --checkpoints out/a.pth,out/b.pth # clean mirror round-robin (skill ranking)
-TORCHDYNAMO_DISABLE=1 python eval_agreement.py --ckpts out/A.pth,out/B.pth  # held-out move-agreement
 TORCHDYNAMO_DISABLE=1 python eval_mymodel.py      # BC MyModel on the Lucario mirror
 python utils/run_smoketest_battle.py                             # smallest signal that the engine runs at all
 ```

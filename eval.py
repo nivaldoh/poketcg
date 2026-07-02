@@ -411,7 +411,7 @@ def run_gauntlet(args) -> int:
         print(f"               {'field mean':14s} = {100 * sum(r['p'] for r in field) / len(field):5.1f}%")
     print("\nProgression/regression = change in the SKILL-axis win% (or Elo) vs this same frozen")
     print("anchor across runs. For a controlled ship/no-ship verdict use --mode sprt. Near-identical")
-    print("checkpoints won't separate here (mirror ~50/50) — use eval_agreement.py for those.")
+    print("checkpoints won't separate here (mirror ~50/50) at any feasible n.")
     return 0
 
 
