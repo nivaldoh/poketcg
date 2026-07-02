@@ -11,13 +11,13 @@ Design for the driver:
   * FIELD TRAINING (default `--opponent rulebased`): the opponent seat is one of the 4 rule-based
     archetype agents (random per game), each playing ITS OWN deck (asymmetric battle_start); the
     PPO seat plays a random `--decks` deck, ONE shared model. This replaced mirror self-play as
-    the default after the measured self-play NON-TRANSFER (out/ppo_ceiling_report.md: crushes
+    the default after the measured self-play NON-TRANSFER (docs/ppo/ppo_ceiling_report.md: crushes
     random everywhere, loses all 16 deck×opponent cells vs the field). DELIBERATE consequence:
     the training field == eval_ppo.py's field, so that eval is in-distribution — acceptable
     because the project goal is beating exactly this field.
   * `self` (live-policy mirror), `random`, `frozen` remain as curriculum/fallback modes, and
     `--opponent` accepts a comma MIX drawn per game (e.g. `rulebased,random` — the reward-
-    starvation curriculum lever from out/ppo_failure_investigation.md). Under
+    starvation curriculum lever from docs/ppo/ppo_failure_investigation.md). Under
     `--opponent self` the collect win-rate is ~50% BY CONSTRUCTION (same policy both seats) —
     read progress from eval_ppo.py instead; vs the rule-based field the collect win-rate IS a
     genuine progress signal.
@@ -143,7 +143,7 @@ def make_opponent(kind, ppo, device):
     non-PPO seat; opp_deck None = mirror (opponent plays the learner's deck). `kind` may be a
     COMMA LIST (e.g. 'rulebased,random'): one entry is drawn uniformly per game, and repeating a
     kind weights it ('rulebased,rulebased,random' = 2:1) — the curriculum lever for reward
-    starvation (out/ppo_failure_investigation.md, verdict 2: vs dragapult/iono the field alone
+    starvation (docs/ppo/ppo_failure_investigation.md, verdict 2: vs dragapult/iono the field alone
     yields ~0.1 wins/update). Default: rulebased."""
     kinds = [k.strip() for k in kind.split(",") if k.strip()]
     if not kinds:
@@ -278,7 +278,7 @@ def main() -> int:
                          "self-play non-transfer); 'self'=live current policy (mirror self-play); "
                          "'random'/'frozen'=curriculum/fallback. E.g. 'rulebased,random' mixes in "
                          "winnable games against the reward starvation measured in "
-                         "out/ppo_failure_investigation.md")
+                         "docs/ppo/ppo_failure_investigation.md")
     ap.add_argument("--decks", default="lucario,abomasnow,dragapult_ex,iono",
                     help="comma list of deck names in decks/<name>.csv the LEARNER cycles through "
                          "(the rulebased opponent always plays its own archetype deck)")
@@ -303,13 +303,13 @@ if __name__ == "__main__":
 #   3. ppo_model.PPO.update (MC returns + clipped surrogate) -> loss finite; ratio≈1 on epoch 0.
 #   4. train() vs random -> win-rate cleared the fresh-net baseline (eval_ppo.py, n per eval-discipline).
 #   5. SELF-PLAY + MULTI-DECK: `--opponent self` (live policy, mirror) across all 4 decks, one
-#      shared model. Outcome measured in out/ppo_ceiling_report.md: NON-TRANSFER (crushes random,
+#      shared model. Outcome measured in docs/ppo/ppo_ceiling_report.md: NON-TRANSFER (crushes random,
 #      loses all 16 cells vs the rule-based field) + broken critic (explained_var ~0.1).
 #   6. FIELD TRAINING + GAE + MINIBATCHES (current): `--opponent rulebased` default (asymmetric
 #      decks vs the 4 archetypes — the fix for finding 5's non-transfer), GAE(λ=0.95)/γ=1.0
 #      TD(λ) value targets (the broken-critic fix), K epochs × shuffled minibatches with
 #      per-minibatch advantage normalization (approx_kl was ~0.001 — policy barely moved).
-#   7. CRITIC FIX + HONEST TELEMETRY (current, from out/ppo_failure_investigation.md): LINEAR
+#   7. CRITIC FIX + HONEST TELEMETRY (current, from docs/ppo/ppo_failure_investigation.md): LINEAR
 #      value head (the tanh output saturated near -1 under the ~90%-loss field, holdout EV ~0 —
 #      "win-only REINFORCE"), ev_true_pre = holdout EV of act-time V vs true outcome (the gate;
 #      in-sample explained_var read ~0.4 while holdout was ~0), per_game [deck,opp,G] records in

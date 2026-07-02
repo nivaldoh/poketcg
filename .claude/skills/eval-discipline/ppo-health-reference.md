@@ -9,7 +9,7 @@ telemetry read from `{out_dir}/{out_prefix}_metrics.jsonl` (discover: `ls out/*_
 
 | Label | Source | Weight |
 |---|---|---|
-| `[measured-here]` | this repo's own experiments (`out/ppo_failure_investigation.md`, `work_log.txt`, memory) | strongest — overrides literature on this env |
+| `[measured-here]` | this repo's own experiments (`docs/ppo/ppo_failure_investigation.md`, `work_log.txt`, memory) | strongest — overrides literature on this env |
 | `[blog]` | `docs/ppo/ppo_iclr_blog_post.md` — Huang et al., "The 37 Implementation Details of PPO" (ICLR blog track) | Atari/MuJoCo-derived heuristics |
 | `[paper]` | `docs/ppo/what_matters_in_on_policy_rl_paper.pdf` — Andrychowicz et al. 2020, "What Matters in On-Policy RL" | continuous-control MuJoCo only (5 envs) |
 | `[engstrom-code]` | `reference_repos/implementation-matters/` — Engstrom et al. ICLR 2020 code release | verified in the vendored code; its README states **no** quantitative findings |
@@ -142,11 +142,11 @@ Diff against `reference_repos/implementation-matters/src/policy_gradients/` by s
 
 - **Critic gate PENDING** as of 2026-07-02: next field run must show `ev_true_pre` ≫ 0 sustained,
   then `eval_ppo.py` matrix vs the ckpt150 anchor. → memory `ppo-failure-investigation-verdict`,
-  `out/ppo_failure_investigation.md`.
+  `docs/ppo/ppo_failure_investigation.md`.
 - **Checkpoint selection: eval-best, never `_final`** — curves rise then ERODE. → same report.
 - **Don't re-add a bounding tanh to the value head** (saturated under skewed outcomes); don't
   re-introduce value-target z-scoring. → memory `ppo-from-scratch-skeleton`.
 - **Verdict bar:** disjoint Wilson CIs or pooled ≥3σ only; same-seed re-evals swing ~±2σ (engine
   RNG unseedable). → memory `cg-engine-rng-unseedable-crn-infeasible`, `EVAL.md` §5.
 - **Ruled out as causes (don't re-suspect without new evidence):** ratio-tail spikes, duplicate
-  option rows as the driver, zero-contrast-batch skipping, draws. → `out/ppo_failure_investigation.md`.
+  option rows as the driver, zero-contrast-batch skipping, draws. → `docs/ppo/ppo_failure_investigation.md`.

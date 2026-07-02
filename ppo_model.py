@@ -10,7 +10,7 @@ Design:
   * FRESH network from scratch — we do NOT reuse MyModel or its Transformer/sparse featurizers.
   * GAE(λ) advantages + TD(λ) value targets (value bootstrap between the learner's own decision
     steps; terminal-only ±1 reward). This replaced the original PPO-PyTorch-style Monte-Carlo
-    returns after the measured broken-critic plateau (explained_var ~0.1 — out/ppo_ceiling_report.md);
+    returns after the measured broken-critic plateau (explained_var ~0.1 — docs/ppo/ppo_ceiling_report.md);
     γ=1.0 + λ=0.95 defaults follow the NashPG reference config for the same two-player zero-sum
     terminal-only reward shape (THEORY-REVIEW FLAG, see PPO.update).
 
@@ -425,7 +425,7 @@ class ActorCritic(nn.Module):
         # Value head: LINEAR output (no output squash). A final tanh was removed after the field
         # run measured it saturated under a ~90%-loss reward distribution: V pinned near −1,
         # holdout EV ≈ 0, and the tanh's (1−V²) gradient factor crushed exactly the rare-win
-        # errors that carried the signal (out/ppo_failure_investigation.md, verdict 1). The
+        # errors that carried the signal (docs/ppo/ppo_failure_investigation.md, verdict 1). The
         # terminal-only ±1 targets are bounded on their own, so an unbounded regressor is safe.
         self.value_head = nn.Sequential(
             nn.Linear(state_repr_dim, hidden), nn.Tanh(),
@@ -698,7 +698,7 @@ class PPO:
         #    BEFORE this update trained on these games, so measuring them against the true
         #    outcomes is out-of-sample by construction. (explained_var is NOT: it is computed
         #    post-fit against targets containing the critic's own bootstrapped values — it read
-        #    ~0.4 on the run whose holdout EV was ≈ 0, out/ppo_failure_investigation.md.)
+        #    ~0.4 on the run whose holdout EV was ≈ 0, docs/ppo/ppo_failure_investigation.md.)
         g_true = []
         ret = 0.0
         for r, done in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):

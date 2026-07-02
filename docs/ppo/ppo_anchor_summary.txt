@@ -1,0 +1,23 @@
+# ANCHOR: ppo_selfplay_final (100-update self-play, HIDDEN=256) vs rule-based field
+# eval_ppo.py n=200/cell sampled, seed 11, CPU. * = mirror diagonal (clean skill read).
+# format: baseline(untrained) -> trained(100 updates)
+
+## Mirror diagonals (clean skill read):
+lucario      vs lucario      [mirror*   ]: baseline  16.5% (12-22) -> trained  15.0% (11-21) [Elo -301] -> overlap (indistinguishable)
+abomasnow    vs abomasnow    [mirror*   ]: baseline   2.5% (1-6) -> trained  15.5% (11-21) [Elo -295] -> CLEARS baseline
+dragapult_ex vs dragapult_ex [mirror*   ]: baseline   1.0% (0-4) -> trained   0.5% (0-3) [Elo -920] -> overlap (indistinguishable)
+iono         vs iono         [mirror*   ]: baseline   1.0% (0-4) -> trained   0.5% (0-3) [Elo -920] -> overlap (indistinguishable)
+
+## All cells (incl. deck-confounded off-diagonal):
+lucario      vs abomasnow    [confounded]: baseline   1.0% (0-4) -> trained   4.5% (2-8) [Elo -531] -> overlap (indistinguishable)
+lucario      vs dragapult_ex [confounded]: baseline   1.0% (0-4) -> trained   6.5% (4-11) [Elo -463] -> CLEARS baseline
+lucario      vs iono         [confounded]: baseline   1.0% (0-4) -> trained   4.0% (2-8) [Elo -552] -> overlap (indistinguishable)
+abomasnow    vs lucario      [confounded]: baseline   9.5% (6-14) -> trained  14.0% (10-19) [Elo -315] -> overlap (indistinguishable)
+abomasnow    vs dragapult_ex [confounded]: baseline   2.0% (1-5) -> trained  16.0% (12-22) [Elo -288] -> CLEARS baseline
+abomasnow    vs iono         [confounded]: baseline   1.5% (1-4) -> trained   4.0% (2-8) [Elo -552] -> overlap (indistinguishable)
+dragapult_ex vs lucario      [confounded]: baseline  11.5% (8-17) -> trained   9.0% (6-14) [Elo -402] -> overlap (indistinguishable)
+dragapult_ex vs abomasnow    [confounded]: baseline   1.0% (0-4) -> trained   3.5% (2-7) [Elo -576] -> overlap (indistinguishable)
+dragapult_ex vs iono         [confounded]: baseline   0.0% (0-2) -> trained   0.5% (0-3) [Elo -920] -> overlap (indistinguishable)
+iono         vs lucario      [confounded]: baseline  15.5% (11-21) -> trained   6.0% (3-10) [Elo -478] -> REGRESSED
+iono         vs abomasnow    [confounded]: baseline   3.0% (1-6) -> trained   4.0% (2-8) [Elo -552] -> overlap (indistinguishable)
+iono         vs dragapult_ex [confounded]: baseline   0.0% (0-2) -> trained   3.0% (1-6) [Elo -604] -> overlap (indistinguishable)
