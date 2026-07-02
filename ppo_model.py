@@ -563,6 +563,25 @@ class RolloutBuffer:
 # ============================================================================================
 # PPO — mirrors the reference's PPO class (select_action / update / save / load).
 # ============================================================================================
+# Layer-1 telemetry contract (evaluation_harness_report.md §1a): the exact key set update()
+# returns. Selftests assert against this tuple so the dict and its consumers can't drift apart.
+STATS_KEYS = (
+    "loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac", "explained_var",
+    "ratio_dev_e0", "ratio_max", "grad_norm_max", "grad_norm_policy_max", "grad_norm_value_max",
+    "entropy_norm", "adv_mean_raw", "adv_std_raw",
+    "return_mean", "return_std", "return_min", "return_max", "value_mean",
+)
+
+
+def _grad_norm(module):
+    """Pre-clip L2 norm of the grads currently on `module`'s params (0.0 if backward hasn't run)."""
+    total = 0.0
+    for p in module.parameters():
+        if p.grad is not None:
+            total += float(p.grad.detach().norm()) ** 2
+    return total ** 0.5
+
+
 class PPO:
     def __init__(self, state_dim, option_dim, lr, gamma, eps_clip, k_epochs,
                  vf_coef, ent_coef, device):
@@ -664,6 +683,12 @@ class PPO:
         (dense_state, state_ids, opt_b, cid_b, aid_b,
          mask, actions, old_logp, old_v) = self._collate()
         advantages = (returns - old_v).detach()
+        # PRE-normalization advantage stats (post-norm mean/std are 0/1 by construction under this
+        # FULL-batch normalization — log them too if minibatching ever lands). Bug signatures:
+        # adv_mean_raw persistently far from 0 = biased V; adv_std_raw ≈ return_std = V contributes
+        # nothing (the broken-critic symptom, seen from the advantage side).
+        adv_mean_raw = float(advantages.mean())
+        adv_std_raw = float(advantages.std())
         # Normalize the ADVANTAGES (not the returns) — ICLR "37 details" #7. This is the coherent
         # place to normalize: advantages are post-baseline (≈zero-mean by construction), so scaling
         # them only fixes the policy-gradient step size WITHOUT destroying the win/loss information the
@@ -674,10 +699,17 @@ class PPO:
 
         # 4. K epochs of full-batch clipped-surrogate ascent over the same rollout.
         stats = {}
+        ratio_dev_e0 = float("nan")
+        grad_norm_max = grad_norm_policy_max = grad_norm_value_max = 0.0
         for epoch in range(self.k_epochs):
             logp, V, entropy = self.policy.evaluate(dense_state, state_ids, opt_b, cid_b, aid_b,
                                                     mask, actions)
             ratio = torch.exp(logp - old_logp)
+            if epoch == 0:
+                # Epoch-0 ratio must be ≡1: old_logp was captured under this exact θ, so any
+                # deviation beyond fp noise means evaluate() failed to reconstruct act()'s
+                # distribution (collate/mask/featurization drift) — the ICLR "check ratio=1" rule.
+                ratio_dev_e0 = float((ratio.detach() - 1.0).abs().max())
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
             policy_loss = -torch.min(surr1, surr2).mean()
@@ -686,10 +718,16 @@ class PPO:
 
             self.optimizer.zero_grad()
             loss.backward()
+            # Per-head PRE-clip grad norms, max over the K epochs (spikes are the signal): the
+            # global norm can mask a value-head-dominated gradient — the value/policy loss-scale-
+            # imbalance signature. Shared embeddings are covered by the total norm only.
+            grad_norm_policy_max = max(grad_norm_policy_max, _grad_norm(self.policy.policy_scorer))
+            grad_norm_value_max = max(grad_norm_value_max, _grad_norm(self.policy.value_head))
             # THEORY-REVIEW FLAG: the named reference (PPO-PyTorch/PPO.py) uses NO gradient clip;
             # we keep this one-line global-norm clip (ICLR "37 details" #11, norm 0.5) as a
             # standard stabilizer. Minor, deliberate divergence — see the plan/notes.
-            nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            grad_norm_max = max(grad_norm_max, float(grad_norm))
             self.optimizer.step()
 
             if epoch == self.k_epochs - 1:              # diagnostics from the last epoch (detached)
@@ -707,6 +745,28 @@ class PPO:
                         "approx_kl": float(approx_kl),
                         "clip_frac": float(clip_frac),
                         "explained_var": float(explained_var),
+                        # Layer-1 additions (see STATS_KEYS / evaluation_harness_report.md §1a).
+                        # ratio_max: tail importance-weight violations hide behind a healthy mean
+                        # KL ("Truly PPO"). entropy_norm ∈ (0,1]: entropy / ln(n_options) — raw
+                        # entropy is uninterpretable under variable action counts; →0 collapse,
+                        # →1 flatten (is_policy_select guarantees n ≥ 2, so ln(n) > 0).
+                        "ratio_dev_e0": ratio_dev_e0,
+                        "ratio_max": float(ratio.max()),
+                        "grad_norm_max": grad_norm_max,
+                        "grad_norm_policy_max": grad_norm_policy_max,
+                        "grad_norm_value_max": grad_norm_value_max,
+                        "entropy_norm": float((entropy / mask.sum(dim=1).float().log()).mean()),
+                        "adv_mean_raw": adv_mean_raw,
+                        "adv_std_raw": adv_std_raw,
+                        # returns are γ^k·(±1) ∈ [-1,1] by construction — min/max outside that
+                        # range means the per-episode reset in the MC recursion broke (reward
+                        # leaking across episode boundaries). value_mean: act-time V, catches
+                        # tanh-head saturation / sign bias alongside explained_var.
+                        "return_mean": float(returns.mean()),
+                        "return_std": float(returns.std()),
+                        "return_min": float(returns.min()),
+                        "return_max": float(returns.max()),
+                        "value_mean": float(old_v.mean()),
                     }
 
         # 5. Clear the now-off-policy buffer.
@@ -785,7 +845,13 @@ def _selftest(games=2, seed=0):
     ppo.buffer.is_terminals[-1] = True
     ppo.buffer.rewards[-1] = 1.0
     stats = ppo.update()
-    assert math.isfinite(stats["loss"]), f"update() produced non-finite loss: {stats}"
+    # Telemetry contract: the full Layer-1 key set, all finite, and the epoch-0 ratio invariant
+    # holding THROUGH update() (the allclose check above runs pre-update; this one exercises the
+    # real collate→evaluate path inside the K-epoch loop on genuine cg observations).
+    assert set(stats) == set(STATS_KEYS), f"stats keys drifted from STATS_KEYS: {set(stats) ^ set(STATS_KEYS)}"
+    assert all(math.isfinite(v) for v in stats.values()), f"non-finite stat: {stats}"
+    assert stats["ratio_dev_e0"] < 1e-4, \
+        f"epoch-0 ratio != 1 through update() (recompute drift): {stats['ratio_dev_e0']:.2e}"
 
     print(f"[selftest] OK  STATE_DIM={STATE_DIM} OPTION_DIM={OPTION_DIM} "
           f"N_STATE_SLOTS={N_STATE_SLOTS}  policy_nodes_checked={checked} buffer={n_before} "
@@ -908,6 +974,12 @@ def _update_learns_test(seed=0):
     eps = 1e-4
     assert math.isfinite(stats1["loss"]) and math.isfinite(stats2["loss"]), "non-finite loss"
     assert stats1["approx_kl"] >= -1e-5 and stats2["approx_kl"] >= -1e-5, "approx_kl unexpectedly negative"
+    # Layer-1 telemetry: full key set, finite; both episodes are single-step ±1 terminals, so the
+    # MC returns must be exactly ±1 (any excursion outside [-1,1] = broken episode-boundary reset).
+    assert set(stats1) == set(STATS_KEYS), f"stats keys drifted: {set(stats1) ^ set(STATS_KEYS)}"
+    assert all(math.isfinite(v) for v in stats1.values()), f"non-finite stat: {stats1}"
+    assert -1.0 - 1e-6 <= stats1["return_min"] and stats1["return_max"] <= 1.0 + 1e-6, \
+        f"returns escaped [-1,1]: min={stats1['return_min']} max={stats1['return_max']}"
     assert g1 > g0 + eps and g2 > g1 + eps, f"good-action prob did not rise: {g0:.4f} {g1:.4f} {g2:.4f}"
     assert b1 < b0 - eps and b2 < b1 - eps, f"bad-action prob did not fall: {b0:.4f} {b1:.4f} {b2:.4f}"
     assert vg1 > vg0 and vg2 > vg1, f"V(S_g) did not rise toward +: {vg0:.4f} {vg1:.4f} {vg2:.4f}"

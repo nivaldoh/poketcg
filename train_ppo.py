@@ -8,12 +8,15 @@ the other trainers. See `ppo_model.py`'s docstring for the design rationale (fre
 per-option scoring head, Monte-Carlo returns) and the reference (PPO-PyTorch/PPO.py).
 
 Design (locked) for the driver:
-  * FIXED opponent (stationary env) for v1 — the PPO seat plays a fixed opponent (default
-    random; later: frozen snapshot / rule-based). Matches the single-agent PPO reference and
-    sidesteps the self-play divergence the repo has seen on this simple starter.
+  * SELF-PLAY (default `--opponent self`): the opponent seat is the LIVE current policy, and the
+    PPO seat learns a MIRROR (same deck both seats) across all 4 game decks (`--decks`) with ONE
+    shared model. `random`/`frozen` opponents are kept as a curriculum/fallback because pure
+    cold-start self-play can stall/diverge on this simple starter (see the repo notes).
   * v1 coverage limit: we only learn SINGLE-SELECT policy nodes (`is_policy_select`); every
     other decision is auto-resolved (`auto_resolve`) and emits no training record. Multi-select
     is a documented future extension.
+  * Mirror self-play win-rate is ~50% BY CONSTRUCTION (same policy both seats) — read progress
+    from eval_ppo.py's deck×opponent matrix, not from the collect win-rate.
 
 Salvaged from the previous (discarded NASHPG-copy) train_ppo.py: only the cg.api / cg.game
 interaction — the `battle_start → battle_select* → battle_finish` driver loop, the
@@ -26,9 +29,12 @@ and resolves imports):
 
 import argparse
 import copy
+import json
+import math
 import os
 import random
 import sys
+import time
 
 import torch
 
@@ -38,8 +44,9 @@ sys.path.insert(0, _REPO_ROOT)
 # Import order is load-bearing: importing tcg_model runs the `CG_LIB_PATH` sys.path insert
 # (tcg_model.py, the `_CG_LIB_PATH` block) that makes the vendored `cg` package importable. The
 # `cg`/`ppo_model` imports below depend on that having happened — keep this ordering.
-from tcg_model import random_agent, sample_deck                        # noqa: E402
+from tcg_model import random_agent                                     # noqa: E402
 from eval_mymodel import is_policy_select, auto_resolve                # noqa: E402  (frozen opp)
+from utils.run_smoketest_battle import load_deck                       # noqa: E402  (canonical deck CSV loader)
 from cg.api import to_observation_class                                # noqa: E402  (frozen opp)
 from cg.game import battle_start, battle_select, battle_finish         # noqa: E402
 from ppo_model import PPO, STATE_DIM, OPTION_DIM                       # noqa: E402
@@ -50,9 +57,12 @@ from ppo_model import PPO, STATE_DIM, OPTION_DIM                       # noqa: E
 # trajectory into the buffer, and writes the terminal reward.
 # ============================================================================================
 # TODO: maybe this is where we could later add a battle visualizer?
-def collect_games(ppo, opp_fn, deck, n_games):
-    """Play `n_games` vs a FIXED opponent, appending the PPO seat's learned decisions to
-    ppo.buffer. Returns the per-game seat-relative result G (for win-rate logging).
+def collect_games(ppo, opp_fn, decks, n_games):
+    """Play `n_games` of MIRROR self-play (both seats the same deck), appending the PPO seat's
+    learned decisions to ppo.buffer. Returns the per-game seat-relative result G (for win-rate
+    logging). `decks` is a LIST; each game picks one at random and both seats play it, so a single
+    shared buffer/model learns all decks. RISK: with --opponent self the win-rate is ~50% BY
+    CONSTRUCTION (same policy both seats) — a sanity check, NOT a progress meter (use eval_ppo.py).
 
     The cg battle is a PROCESS-GLOBAL SINGLETON — a leaked live battle corrupts every later
     game in the process, so battle_finish() MUST run even on error (try/finally). In the local
@@ -60,6 +70,7 @@ def collect_games(ppo, opp_fn, deck, n_games):
     results = []
     for g in range(n_games):
         ppo_seat = g % 2                      # alternate seats for symmetry
+        deck = random.choice(decks)           # random deck/game (mirror); decoupled from seat parity
         obs, start = battle_start(deck, deck)
         if start.errorPlayer >= 0:
             raise ValueError("deck rejected by engine")
@@ -111,7 +122,13 @@ def policy_agent(net, greedy=False):
 
 
 def make_opponent(kind, ppo, device):
-    """Return an opp_fn(obs_dict) -> list[int] for the non-PPO seat. v1 default: random."""
+    """Return an opp_fn(obs_dict) -> list[int] for the non-PPO seat. Default: self (self-play)."""
+    if kind == "self":
+        # SELF-PLAY (default): opponent = the LIVE current policy (no snapshot). Within a collection
+        # round no update runs, so the opponent is a consistent copy of the current policy; across
+        # rounds both seats improve in lockstep. policy_agent never touches ppo.buffer, so ONLY the
+        # PPO seat records and the PPO ratio (old_logp/V_old captured at act time) stays valid.
+        return policy_agent(ppo.policy)
     if kind == "random":
         return random_agent
     if kind == "frozen":
@@ -133,25 +150,56 @@ def train(args):
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    deck = sample_deck                         # v1: locked mirror deck for both seats
+    deck_names = [s.strip() for s in args.decks.split(",") if s.strip()]
+    decks = [load_deck(os.path.join(_REPO_ROOT, "decks", f"{n}.csv")) for n in deck_names]
     ppo = PPO(STATE_DIM, OPTION_DIM, args.lr, args.gamma, args.eps_clip, args.k_epochs,
               args.vf_coef, args.ent_coef, device)
     opp_fn = make_opponent(args.opponent, ppo, device)
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # Layer-1 telemetry sink (evaluation_harness_report.md §1a): one flat JSON object per update
+    # (driver fields + the full PPO.update() stats dict), truncated at run start — the same
+    # convention as the legacy nashpg trainer's {prefix}_metrics.jsonl.
+    metrics_path = os.path.join(args.out_dir, f"{args.out_prefix}_metrics.jsonl")
+    open(metrics_path, "w").close()
 
     # Save the UNTRAINED net first so eval_ppo.py can anchor "did training help?" against the fresh-net
     # baseline. That baseline is NOT ~50% vs random: a fresh net still uses the real auto_resolve
     # heuristic on all non-policy nodes, so it starts with an edge — the success test is beating IT.
     ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}_init.pth"))
 
+    print(f"PPO self-play | opponent={args.opponent} | decks={deck_names} | "
+          f"{args.games_per_update} games/update x {args.updates} updates | device={device} | "
+          f"metrics={metrics_path}", flush=True)
     for it in range(1, args.updates + 1):
-        results = collect_games(ppo, opp_fn, deck, args.games_per_update)
+        t0 = time.time()
+        results = collect_games(ppo, opp_fn, decks, args.games_per_update)
         n_samples = len(ppo.buffer)                # capture before update() clears the buffer
-        stats = ppo.update()
+        stats = ppo.update() or {}
         wins = sum(1 for G in results if G > 0)
+        draws = sum(1 for G in results if G == 0)
         n = len(results)
-        print(f"[update {it}/{args.updates}] games={n} winrate={wins / n:.3f} "
-              f"samples={n_samples} loss={stats.get('loss') if stats else 'n/a'}")
+        games_per_s = n / max(time.time() - t0, 1e-9)   # collect+update per the nashpg convention
+        with open(metrics_path, "a") as f:
+            f.write(json.dumps({"update": it, "games": n, "wins": wins, "draws": draws,
+                                "losses": n - wins - draws, "n_samples": n_samples,
+                                "games_per_s": round(games_per_s, 2)} | stats) + "\n")
+        # winrate is ~.5 under self-play (mirror) — a sanity check, NOT progress; the real signal is
+        # the eval matrix (eval_ppo.py) + these update diagnostics (value fit / entropy / KL).
+        print(f"[update {it}/{args.updates}] games={n} winrate={wins / n:.3f} samples={n_samples} "
+              f"loss={stats.get('loss', float('nan')):.3f} vloss={stats.get('value_loss', float('nan')):.3f} "
+              f"ev={stats.get('explained_var', float('nan')):+.2f} ent={stats.get('entropy', float('nan')):.3f} "
+              f"ent_n={stats.get('entropy_norm', float('nan')):.2f} kl={stats.get('approx_kl', float('nan')):.4f} "
+              f"clip={stats.get('clip_frac', float('nan')):.2f} ({games_per_s:.1f} g/s)", flush=True)
+        # WARN-only tripwires — only unambiguous bug signals (zero false-positive risk), and never
+        # abort a run. Everything threshold-y (kl, ev, clip_frac) stays a logged number instead:
+        # the repo's own healthy legacy run had approx_kl=0.039 on update 1, so a 0.02-style KL
+        # warning would be wallpaper.
+        if stats.get("ratio_dev_e0", 0.0) > 1e-4:
+            print(f"[WARN] epoch-0 ratio deviates from 1 by {stats['ratio_dev_e0']:.2e} — "
+                  f"act/evaluate recompute drift (bug)", flush=True)
+        if not math.isfinite(stats.get("loss", 0.0)):
+            print("[WARN] non-finite loss", flush=True)
         if it % args.save_every == 0:
             ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}{it}.pth"))
     ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}_final.pth"))
@@ -171,7 +219,11 @@ def main() -> int:
     ap.add_argument("--games-per-update", type=int, default=16,
                     help="self-play games collected before each PPO update")
     ap.add_argument("--updates", type=int, default=100, help="number of PPO updates")
-    ap.add_argument("--opponent", default="random", choices=["random", "frozen", "rulebased"])
+    ap.add_argument("--opponent", default="self", choices=["self", "random", "frozen", "rulebased"],
+                    help="non-PPO seat: 'self'=live current policy (self-play, default); "
+                         "'random'/'frozen' kept as curriculum/fallback (self-play can stall)")
+    ap.add_argument("--decks", default="lucario,abomasnow,dragapult_ex,iono",
+                    help="comma list of deck names in decks/<name>.csv; mirror self-play cycles them")
     # Bookkeeping (repo conventions: out/{prefix}*.pth).
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out-prefix", default="ppo")
@@ -187,10 +239,13 @@ if __name__ == "__main__":
 
 
 # ============================================================================================
-# FILL-IN ROADMAP (one step at a time, smallest verification each):
+# ROADMAP (done; each shipped with the smallest verification):
 #   1. ppo_model.encode_state / encode_options -> check tensor shapes on a real obs (STATE_DIM/OPTION_DIM).
 #   2. (ActorCritic.act/evaluate are already concrete) -> one forward pass on a single collected step.
 #   3. ppo_model.PPO.update (MC returns + clipped surrogate) -> loss finite; ratio≈1 on epoch 0.
-#   4. run train() vs random; confirm win-rate climbs above the ~50% random baseline (eval.py,
-#      trustworthy n per the eval-discipline skill).
+#   4. train() vs random -> win-rate cleared the fresh-net baseline (eval_ppo.py, n per eval-discipline).
+#   5. SELF-PLAY + MULTI-DECK (current): `--opponent self` (live policy, mirror) across all 4 decks,
+#      one shared model. Progress is read from eval_ppo.py's deck×opponent matrix vs the rule-based
+#      agents (the mirror win-rate here is ~50% by construction). Future: both-seat recording (2x
+#      data), lagged-snapshot opponent if cold-start self-play stalls, multi-select coverage.
 # ============================================================================================
