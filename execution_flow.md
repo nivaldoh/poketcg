@@ -55,7 +55,7 @@ Files:
 | `train_reinforce.py` | training (retired) | plain REINFORCE; tried, regressed (removed — git history). |
 | `eval.py` | **scoring** | pits two agents head-to-head and reports win rates + CI + Elo. |
 | `eval_mymodel.py` | scoring (extra) | Lucario-mirror win-rate signal for the BC `MyModel`. |
-| `kaggle/push_sweep.py` | **offload** | ships code + checkpoints to Kaggle to run heavy jobs. |
+| `kaggle/push_sweep.py` | **offload** | ships the `train_ppo.py` closure to Kaggle script-kernels for heavy runs. |
 
 Where each loads its deck: `utils/run_smoketest_battle.py` reads a CSV (`--deck`, default `deck.csv`);
 `eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`); `train_ppo.py` /
@@ -559,7 +559,7 @@ Local hardware is small (WSL2), so heavy training/eval is pushed to Kaggle. Driv
 
 ```
 STEP · stage
-  IN   the eval/train code + decks + checkpoints
+  IN   the eval/train code + decks (no checkpoints -- PPO trains from a fresh net)
   DO   bundle them into a PRIVATE Kaggle dataset (outside the submission boundary)
   OUT  a staged dataset
         |
@@ -568,7 +568,7 @@ STEP · stage
 ```
 STEP · sweep
   IN   the staged dataset
-  DO   push script-kernels (run_br.py -> runs train_nashpg.py, --out-dir /kaggle/working)
+  DO   push script-kernels (run_ppo.py -> runs train_ppo.py, --out-dir /kaggle/working)
   OUT  kernels running on Kaggle CPUs
         |
         v
@@ -577,7 +577,7 @@ STEP · sweep
 STEP · status / pull / report
   IN   the running kernels
   DO   poll, then download results
-  OUT  results in kaggle/out_kaggle/  + a comparison report
+  OUT  results in kaggle/out_kaggle/  + a training-curve summary (verdict = local eval_ppo.py)
 ```
 
 Real lessons (`work_log.txt` / README "Running heavy jobs on Kaggle"):
