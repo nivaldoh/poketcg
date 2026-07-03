@@ -152,6 +152,28 @@ def make_opponent(kind, ppo, device):
         providers = [make_opponent(k, ppo, device) for k in kinds]
         return lambda: random.choice(providers)()
     kind = kinds[0]
+    if "@" in kind:
+        # 'base@eps' — the base opponent, but each DECISION is replaced by a random legal action
+        # with prob eps: an on-distribution difficulty dial that manufactures wins INSIDE the
+        # starved matchups (real archetype policy most decisions, real decks), unlike random-mixing
+        # (work_log 2026-07-02 gate run: 50% random lifts starved cells but is insufficient).
+        base, _, eps_s = kind.partition("@")
+        eps = float(eps_s)
+        if not 0.0 < eps < 1.0:
+            raise ValueError(f"eps must be in (0,1): {kind!r}")
+        inner = make_opponent(base, ppo, device)
+
+        def next_weakened():
+            fn, deck, name = inner()
+
+            def noisy_fn(obs):
+                # ALWAYS run the base agent, then maybe discard its pick: the rule-based modules
+                # keep module-level per-turn state (turn-0 reset / plan / can_attack) that must
+                # see every decision to stay coherent.
+                sel = fn(obs)
+                return random_agent(obs) if random.random() < eps else sel
+            return noisy_fn, deck, f"{name}@{eps:g}"
+        return next_weakened
     if kind == "self":
         # SELF-PLAY: opponent = the LIVE current policy (no snapshot). Within a collection
         # round no update runs, so the opponent is a consistent copy of the current policy; across
@@ -276,8 +298,10 @@ def main() -> int:
                          "uniformly per game (repeat a kind to weight it). 'rulebased'=the "
                          "4-archetype field, each on its own deck (default — the measured fix for "
                          "self-play non-transfer); 'self'=live current policy (mirror self-play); "
-                         "'random'/'frozen'=curriculum/fallback. E.g. 'rulebased,random' mixes in "
-                         "winnable games against the reward starvation measured in "
+                         "'random'/'frozen'=curriculum/fallback. Any kind takes an optional @eps "
+                         "suffix (e.g. 'rulebased@0.25'): each decision replaced by a random legal "
+                         "action with prob eps. E.g. 'rulebased,rulebased@0.25' mixes in winnable "
+                         "on-distribution games against the reward starvation measured in "
                          "docs/ppo/ppo_failure_investigation.md")
     ap.add_argument("--decks", default="lucario,abomasnow,dragapult_ex,iono",
                     help="comma list of deck names in decks/<name>.csv the LEARNER cycles through "

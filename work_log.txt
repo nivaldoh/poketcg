@@ -435,3 +435,55 @@ Work log (lean — what's been tried/done).
   weighted mix annealing) rather than 50% random; a within-game credit probe (log per-decision V
   spread inside games) before trusting GAE for more than matchup baselining; optional Kaggle
   multi-seed if any verdict cell is marginal.
+
+2026-07-02 (later still) — ε-WEAKENED FIELD CURRICULUM (the "manufacture wins in starved matchups"
+arm from the previous entry's Next). Goal: lift the starved dragapult/iono columns WITHOUT the
+random-mix arm's mirror tax, with a curriculum that stays on-distribution.
+- Code (train_ppo.py, ~15 lines in make_opponent): any opponent token now takes an optional @eps
+  suffix ('rulebased@0.25') — same base opponent, but each DECISION is replaced by a random legal
+  action (random_agent) with prob eps. Wrapper ALWAYS calls the base agent first then maybe
+  discards its pick (the rule-based modules keep module-level per-turn state that must see every
+  decision). opp_name tagged '{name}@{eps:g}' so per_game separates weakened from full games.
+  Composes with the comma-mix via recursion. Eval stays full-strength (eval_ppo untouched).
+  Verified: --help; ValueError on @1.5/@0; 2-update smoke (tagged+untagged names in per_game, no
+  ratio-drift warns).
+- ε calibration probes (1 update x 400 games = init net, zero code): @0.25 → dragapult_ex 16.2%,
+  iono 15.7%, abomasnow 9.2%, lucario-archetype 43.6%; @0.5 → 31/53/13/74%. Rule was "smallest ε
+  with ≥~15% vs both dragapult and iono" → ε=0.25. No crashes in 800 corrupted-agent games.
+- Main arm `ppo_epsmix` (--opponent rulebased,rulebased@0.25, 300 upd, save-every 25, seed 0):
+  Training gate PASSED: wins vs weakened dragapult/iono 17%/17% (upd 1-75) rising to 19%/28%
+  (226-300). Leading transfer indicator FIRED — vs FULL-strength opponents in training games:
+  dragapult_ex 1%→8-9%, abomasnow 7%→19%, lucario-archetype 15%→26% (iono ~flat 1-4%). Health
+  clean: ev_h medians +0.06→+0.16 (1-5 sentinel windows per 75), entropy stable ~0.9 (no
+  erosion), pooled winrate 16→22.7%.
+- Ckpt curve (lucario deck, n=200/cell, sampled, 75/150/225/300): mirror 21.5/25.5/27.0/25.5;
+  vs abomasnow 2.0/10.5/7.0/4.5; vs dragapult_ex 0.5/6.0/3.5/3.5; vs iono 2.5/4.0/4.0/3.5 →
+  eval-best = ckpt150 (again — third arm in a row peaking at 150).
+- Full 4x4 matrix (n=200/cell, sampled, baseline=ppo_epsmix_init, one invocation;
+  out/ppo_epsmix_matrix.log): ppo_epsmix150 clears baseline in 7/16 cells (both prior arms: 4/16):
+  lucario mirror 29.0 CI 23-36; lucario vs abomasnow 12.0 CI 8-17; lucario vs iono 6.5 CI 4-11;
+  abomasnow vs lucario 19.5; abomasnow MIRROR 20.5 CI 15-27 (fix_mix150 14.0, fix_field300 13.0);
+  abomasnow vs dragapult_ex 12.0 CI 8-17 (baseline 0.5); abomasnow vs iono 5.5 CI 3-10.
+  dragapult/iono DECK rows stay weak (iono vs dragapult_ex 0.0). All 16 cells <50%.
+- Vs pre-registered criteria: PRIMARY (beat the mix anchor's starved cells with disjoint CIs)
+  NOT met — statistical TIE (abom vs dragapult 12.0 CI 8-17 vs mix 15.0 CI 11-21; lucario vs
+  iono 6.5 CI 4-11 vs 7.5 CI 5-12). SECONDARY met — lucario mirror 29.0 CI 23-36 not disjointly
+  below fix_field300's 32.5 CI 26-39 (and above mix's 24.0). STRETCH not met — still disjointly
+  below the pre-fix anchor 43.0 CI 36-50; the reward-rich plateau (~30% mirror) persists,
+  consistent with the open matchup-only-critic suspect. Pooled matrix means are a wash
+  (epsmix150 9.3% vs field300 9.6 / mix150 8.0 / pre-fix field150 9.7) — the gain is in BREADTH
+  (7/16 disjoint over its own baseline) and profile: keeps the mix arm's starved-cell lift while
+  removing its mirror tax.
+- VERDICT (tree row "lift + mirror holds"): ADOPT 'rulebased,rulebased@0.25' as the recommended
+  training curriculum (argparse default stays plain 'rulebased'; annealing / per-archetype ε /
+  frozen ladder stay deferred). ppo_epsmix150 = the best-balanced post-fix checkpoint to date.
+- Does NOT prove: superiority over rulebased,random on the headline starved cells (tie, one
+  invocation each, cross-invocation anchors); any fix for the iono COLUMN (full-strength iono
+  stays 0.5-6.5% everywhere — the @0.25 dial gave the init net 15.7% vs weakened iono but it
+  didn't transfer); the ~30% reward-rich plateau (unchanged — next lever is the within-game
+  credit probe from the previous entry).
+- Cmds: train_ppo.py --opponent rulebased,rulebased@0.25 --updates 300 --save-every 25 --seed 0
+  --out-prefix ppo_epsmix (probes: --opponent rulebased@{0.25,0.5} --updates 1
+  --games-per-update 400); eval_ppo.py --games 200 --skip-baseline --decks lucario --ckpt
+  out/ppo_epsmix{75,150,225,300}.pth; eval_ppo.py --games 200 --baseline out/ppo_epsmix_init.pth
+  --ckpt out/ppo_epsmix150.pth. Logs: out/ppo_epsmix_{train,curve,matrix}.log.
