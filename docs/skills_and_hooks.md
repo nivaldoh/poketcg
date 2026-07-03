@@ -10,7 +10,7 @@ backlog; it's now the index). Skills live in `.claude/skills/<name>/SKILL.md`; t
 | Skill | Use when | Reuses / source of truth | Path |
 |---|---|---|---|
 | **`tcg-rules-critic`** | correctness depends on TCG rules — deck legality, evolution, energy/retreat, prize/KO, status, determinization, heuristic/feature/eval design | `docs/rulebook.md`; `all_card_data()`; memory `poketcg-card-ids-and-decks` | `.claude/skills/tcg-rules-critic/` |
-| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_mymodel.py` / `eval_ppo.py` win-rates, judging a PPO run's health from its metrics jsonl / picking a checkpoint | `docs/eval_info.md`; `evaluation_harness_report.md`; bundled `ppo-health-reference.md`; memory `eval-training-not-helping-yet`, `ppo-failure-investigation-verdict` | `.claude/skills/eval-discipline/` |
+| **`eval-discipline`** | comparing checkpoints/agents, claiming the model improved/regressed, interpreting `eval.py` / `eval_ppo.py` win-rates, judging a PPO run's health from its metrics jsonl / picking a checkpoint | `docs/eval_info.md`; `evaluation_harness_report.md`; bundled `ppo-health-reference.md`; memory `eval-training-not-helping-yet`, `ppo-failure-investigation-verdict` | `.claude/skills/eval-discipline/` |
 | **`cg-agent-contract`** | authoring/debugging an `agent()`, a deck, or option-handling code | `docs/cg-sdk.md`; `utils/run_smoketest_battle.py`; `get_card()` in `tcg_model.py` | `.claude/skills/cg-agent-contract/` |
 | **`kaggle-submission`** | explicitly asked to package/submit a deployable agent (rare, high-stakes) | bundled `pack_submission.py` (executable layout SoT) | `.claude/skills/kaggle-submission/` |
 

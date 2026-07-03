@@ -25,12 +25,16 @@ in training (no untrained/noise embedding rows — cf. the embedding caveat in p
 Total battles = nets × decks × opponents × modes × games (a full 4×4 both-nets sweep at 200/cell is
 6400 battles — use --skip-baseline / fewer --decks/--opponents / smaller --games to trim).
 
+Results also land in a structured json (`--json`, default auto-named under out/) — the input for
+`viz_ppo.py eval` (matrix heatmap, baseline-vs-trained forest plot, checkpoint curves).
+
     TORCHDYNAMO_DISABLE=1 python eval_ppo.py --games 200                     # full 4x4 matrix, both nets
     TORCHDYNAMO_DISABLE=1 python eval_ppo.py --games 200 --skip-baseline     # trained only (half cost)
     TORCHDYNAMO_DISABLE=1 python eval_ppo.py --decks lucario --opponents lucario --games 200  # one cell
 """
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -52,6 +56,7 @@ from eval import (                                                    # noqa: E4
     Agent, play_match, wilson, elo_from_winrate,
     make_random, make_rulebased, make_abomasnow, make_dragapult, make_iono,
 )
+from win_mode import summarize_ends                                   # noqa: E402
 
 
 # Opponent registry: name -> factory returning a ready eval.Agent (policy fused with the deck it
@@ -90,16 +95,28 @@ def resolve_names(spec, valid, kind):
 
 def run_match(net, mode, opp, deck_name, deck, games, seed):
     """Play the PPO net (as model deck `deck`) vs one opponent Agent (its OWN deck) for `games`
-    seat-swapped battles in one selection `mode`. Returns (w, l, d, p, lo, hi) — decisive-only
-    Wilson CI (draws excluded from the denominator, matching eval.py / eval_mymodel.py)."""
+    seat-swapped battles in one selection `mode`. Returns (cell, end_summary): cell =
+    (w, l, d, p, lo, hi) — decisive-only Wilson CI (draws excluded from the denominator,
+    matching eval.py) — and end_summary = the per-cell win-mode telemetry
+    block (see end_mode_summary). Win-mode shares at n<200 are telemetry, not eval claims —
+    quote Wilson CIs (eval.wilson) on any share cited (eval-discipline)."""
     me = Agent(f"ppo:{deck_name}:{mode}", policy_agent(net, greedy=(mode == "greedy")), deck)
-    # play_match (unlike eval_mymodel.play) does NOT reseed; reseed here so the opponent's Python-RNG
+    # play_match does NOT reseed; reseed here so the opponent's Python-RNG
     # stream is identical across nets/modes/cells (comparable). The cg engine RNG stays unseedable, so
     # games are not bit-identical — hence still eval at n>=200 for a real CI.
     random.seed(seed)
-    w, l, d = play_match(me, opp, games)
+    ends = []
+    w, l, d = play_match(me, opp, games, ends_out=ends)
     p, lo, hi = wilson(w, w + l)
-    return w, l, d, p, lo, hi
+    return (w, l, d, p, lo, hi), end_mode_summary(ends)
+
+
+def end_mode_summary(ends):
+    """classify_end dicts -> the end_stats cell block: win_mode.summarize_ends plus compact
+    per-game records [[win, mode, prize_diff, turns], ...] (documented order) for offline
+    re-analysis."""
+    return summarize_ends(ends) | {
+        "games": [[e["win"], e["mode"], e["prize_diff"], e["turns"]] for e in ends]}
 
 
 def _fmt_cell(res):
@@ -151,6 +168,11 @@ def main() -> int:
                     help="seat-swapped games per cell; >=200 for a trustworthy CI (eval-discipline). "
                          "Total battles = nets x decks x opponents x modes x games.")
     ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--json", default="auto",
+                    help="structured results output for viz_ppo.py ('auto' = "
+                         "out/eval_<ckpt0-stem>_g{games}_s{seed}.json; an explicit path, or 'none' "
+                         "to skip). Always-on by default: matrix runs are 1000s of battles and the "
+                         "stdout log is \\r-polluted — persisting is cheap insurance.")
     ap.add_argument("--skip-baseline", action="store_true",
                     help="eval only the trained ckpt (skip the fresh-net baseline; halves total battles)")
     args = ap.parse_args()
@@ -180,24 +202,32 @@ def main() -> int:
           f"{args.games} games/cell | ~{total} battles{warn} | seed={args.seed} | device={device}",
           flush=True)
 
-    # results[tag][mode][deck][opp] = (w, l, d, p, lo, hi)
+    # results[tag][mode][deck][opp] = (w, l, d, p, lo, hi) — FROZEN 6-tuple (viz_ppo unpacks it
+    # positionally); the win-mode telemetry lives in the PARALLEL end_stats block instead.
     results = {}
+    end_stats = {}
     for tag, path in nets:
         if not os.path.exists(path):
             print(f"  {tag}: checkpoint not found at {path} — skipping", flush=True)
             continue
         net = load_net(path, device)
         results[tag] = {m: {d: {} for d in deck_names} for m in modes}
+        end_stats[tag] = {m: {d: {} for d in deck_names} for m in modes}
         for dname in deck_names:
             for oname, opp in opponents:
                 for mode in modes:
                     t = time.time()
-                    cell = run_match(net, mode, opp, dname, model_decks[dname], args.games, args.seed)
+                    cell, ends = run_match(net, mode, opp, dname, model_decks[dname], args.games, args.seed)
                     results[tag][mode][dname][oname] = cell
+                    end_stats[tag][mode][dname][oname] = ends
                     w, l, d, p, lo, hi = cell
                     mirror = "*" if dname == oname else " "
+                    wm = ends["win_modes"]
                     print(f"  {tag:8s} {mode:8s} {dname:12s} vs {oname:12s}{mirror}: {w}/{l}/{d}  "
                           f"win%={100 * p:5.1f}% (95% CI {100 * lo:.1f}-{100 * hi:.1f})  "
+                          f"wmodes P/D/B/E={wm.get('prize', 0)}/{wm.get('deck', 0)}/"
+                          f"{wm.get('bench', 0)}/{wm.get('effect', 0)} "
+                          f"trailW={ends['trailing_win_n']}  "
                           f"[{time.time() - t:.0f}s]", flush=True)
 
     # Per-(tag,mode) win% grids.
@@ -232,6 +262,21 @@ def main() -> int:
                           f"baseline {100 * bp:5.1f}% ({100 * blo:.0f}-{100 * bhi:.0f}) -> "
                           f"{tag} {100 * tp:5.1f}% ({100 * tlo:.0f}-{100 * thi:.0f}) "
                           f"[Elo {_fmt_elo(tp)}] -> {verdict}", flush=True)
+
+    # Structured results for viz_ppo.py (cell tuples serialize as [w,l,d,p,lo,hi] lists).
+    if args.json != "none" and results:
+        jpath = args.json
+        if jpath == "auto":
+            stem = os.path.splitext(os.path.basename(ckpt_paths[0]))[0]
+            jpath = os.path.join(_REPO_ROOT, "out", f"eval_{stem}_g{args.games}_s{args.seed}.json")
+        with open(jpath, "w") as f:
+            # end_stats (2026-07-03, additive — schema stays 1): the per-cell win-mode telemetry
+            # block parallel to results (same tag/mode/deck/opp nesting; see end_mode_summary).
+            json.dump({"schema": 1, "games": args.games, "seed": args.seed, "modes": modes,
+                       "decks": deck_names, "opponents": opp_names,
+                       "ckpts": {tag: path for tag, path in nets if tag in results},
+                       "results": results, "end_stats": end_stats}, f, indent=1)
+        print(f"[json] wrote {jpath}", flush=True)
     return 0
 
 

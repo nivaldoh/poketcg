@@ -50,13 +50,14 @@ sys.path.insert(0, _REPO_ROOT)
 # Import order is load-bearing: importing tcg_model runs the `CG_LIB_PATH` sys.path insert
 # (tcg_model.py, the `_CG_LIB_PATH` block) that makes the vendored `cg` package importable. The
 # `cg`/`ppo_model` imports below depend on that having happened — keep this ordering.
-from tcg_model import random_agent                                     # noqa: E402
-from eval_mymodel import is_policy_select, auto_resolve                # noqa: E402  (frozen opp)
+from tcg_model import random_agent, is_policy_select, auto_resolve     # noqa: E402
 from eval import make_rulebased, make_abomasnow, make_dragapult, make_iono  # noqa: E402  (field opp)
 from utils.run_smoketest_battle import load_deck                       # noqa: E402  (canonical deck CSV loader)
 from cg.api import to_observation_class                                # noqa: E402  (frozen opp)
 from cg.game import battle_start, battle_select, battle_finish         # noqa: E402
-from ppo_model import PPO, STATE_DIM, OPTION_DIM                       # noqa: E402
+from ppo_model import (PPO, STATE_DIM, OPTION_DIM, prize_potential,    # noqa: E402
+                       prize_potential_valid)
+from win_mode import classify_end                                      # noqa: E402  (terminal-obs win-mode telemetry)
 
 
 # ============================================================================================
@@ -64,11 +65,14 @@ from ppo_model import PPO, STATE_DIM, OPTION_DIM                       # noqa: E
 # trajectory into the buffer, and writes the terminal reward.
 # ============================================================================================
 # TODO: maybe this is where we could later add a battle visualizer?
-def collect_games(ppo, next_opponent, decks, n_games):
+def collect_games(ppo, next_opponent, decks, n_games, shape="none", shape_scale=0.5):
     """Play `n_games`, appending the PPO seat's learned decisions to ppo.buffer. Returns per-game
-    records (deck_name, opp_name, G) — G is the seat-relative result — so the metrics jsonl can
-    carry the per-matchup breakdown (the failure investigation had to reconstruct per-opponent
-    trends from checkpoints because only the pooled win-rate was logged). `decks` is a list of
+    records (deck_name, opp_name, G, end) — G is the seat-relative result, `end` the
+    win_mode.classify_end dict (win mode + terminal prize/deck/in-play counts, seat-relative) —
+    so the metrics jsonl can carry the per-matchup breakdown (the failure investigation had to
+    reconstruct per-opponent trends from checkpoints because only the pooled win-rate was
+    logged). Consumers index records positionally (probe_credit reads rec[0][2], viz_ppo reads
+    per_game[0..2]) — extend by APPENDING only, never reorder. `decks` is a list of
     (name, deck) pairs; the learner picks one at random each game, so a single shared
     buffer/model learns all decks. `next_opponent()` is called once per game and returns
     (opp_fn, opp_deck, opp_name): opp_deck None = MIRROR (the opponent plays the learner's deck —
@@ -92,6 +96,19 @@ def collect_games(ppo, next_opponent, decks, n_games):
         if start.errorPlayer >= 0:
             raise ValueError("deck rejected by engine")
         recorded_any = False
+        # --shape prizediff (Stage B(b), plan jiggly-snuggling-orbit): potential-based shaping
+        # with Phi = prize_potential (opp prizes remaining − own, /6) read from the SAME dense
+        # state the critic sees, RELATIVE to the game's first recorded decision (phi_first) so
+        # the per-game shaped-reward sum telescopes to EXACTLY G — prize margin cannot be farmed
+        # for total reward (the REINFORCE prize-diff failure mode, work_log 2026-06-28). Between
+        # consecutive recorded decisions the s·ΔPhi lands on the PREVIOUS decision's reward slot
+        # (rewards[-2]: the opponent never appends, so -2 is our previous step; ΔPhi includes
+        # opponent prize-takes between our decisions — a modeling choice). Terminal write claws
+        # back the accumulated margin: G − s·(phi_last − phi_first). [THEORY-REVIEW: PBRS policy
+        # invariance is an MDP-optimal-policy theorem; the telescoping identity here is exact
+        # arithmetic (asserted by the smoke script), finite-sample PPO gradient flow is expected
+        # to change — that is the point. λ=0.95 mildly front-weights prize-taking.]
+        phi_prev = phi_first = None
         try:
             while obs["current"]["result"] < 0:
                 yi = obs["current"]["yourIndex"]
@@ -99,12 +116,26 @@ def collect_games(ppo, next_opponent, decks, n_games):
                     # TODO: PPO taking actions one-by-one? If we had multi-select, probably we would have to collect the whole multi-select decision here.
                     sel, recorded = ppo.select_action(obs)
                     recorded_any = recorded_any or recorded
+                    if shape == "prizediff" and recorded \
+                            and prize_potential_valid(ppo.buffer.dense_states[-1]):
+                        # phi sampled at VALID readings only (MAIN selects, prizes dealt — see
+                        # prize_potential_valid); the increment spans back to the previous valid
+                        # reading and lands on the previous RECORDED decision's reward slot.
+                        phi = prize_potential(ppo.buffer.dense_states[-1])
+                        if phi_prev is None:
+                            phi_first = phi
+                        else:
+                            ppo.buffer.rewards[-2] += shape_scale * (phi - phi_prev)
+                        phi_prev = phi
                 else:
                     sel = opp_fn(obs)
                 obs = battle_select(sel)
         finally:
             battle_finish()
         result = obs["current"]["result"]
+        # Win-mode telemetry (pure-additive: reads the already-held terminal obs, touches no
+        # buffer/reward/RNG state). The engine's RESULT-log reason + terminal counts.
+        end = classify_end(obs, ppo_seat)
         # G ∈ {+1 win, -1 loss, 0 draw}, seat-relative. RISK (draw): a drawn game's whole episode is
         # all-zero returns, which after advantage-normalization reads as a small NEGATIVE advantage in
         # a win-heavy batch — a minor spurious penalty on draws. Rare; accepted for v1.
@@ -114,9 +145,13 @@ def collect_games(ppo, next_opponent, decks, n_games):
         # COARSE CREDIT (accepted v1): G is attributed to the last POLICY-SELECT, which may precede the
         # real game end by several auto-resolved / opponent steps — no per-step reward shaping.
         if recorded_any:
-            ppo.buffer.rewards[-1] = G
+            # Shaped terminal (see the shaping comment above); ≡ G when shaping is off, when no
+            # valid phi reading occurred, or when the game had a single valid reading.
+            margin = shape_scale * (phi_prev - phi_first) \
+                if shape == "prizediff" and phi_prev is not None else 0.0
+            ppo.buffer.rewards[-1] = G - margin
             ppo.buffer.is_terminals[-1] = True
-        records.append((deck_name, opp_name, G))
+        records.append((deck_name, opp_name, G, end))
     return records
 
 
@@ -213,7 +248,8 @@ def train(args):
     decks = [(n, load_deck(os.path.join(_REPO_ROOT, "decks", f"{n}.csv"))) for n in deck_names]
     ppo = PPO(STATE_DIM, OPTION_DIM, args.lr, args.gamma, args.eps_clip, args.k_epochs,
               args.vf_coef, args.ent_coef, device,
-              gae_lambda=args.gae_lambda, minibatches=args.minibatches)
+              gae_lambda=args.gae_lambda, minibatches=args.minibatches,
+              value_balance=args.value_balance)
     next_opponent = make_opponent(args.opponent, ppo, device)
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -233,21 +269,25 @@ def train(args):
           f"metrics={metrics_path}", flush=True)
     for it in range(1, args.updates + 1):
         t0 = time.time()
-        records = collect_games(ppo, next_opponent, decks, args.games_per_update)
+        records = collect_games(ppo, next_opponent, decks, args.games_per_update,
+                                shape=args.shape, shape_scale=args.shape_scale)
         n_samples = len(ppo.buffer)                # capture before update() clears the buffer
         stats = ppo.update() or {}
-        results = [G for _, _, G in records]
+        results = [G for _, _, G, _ in records]
         wins = sum(1 for G in results if G > 0)
         draws = sum(1 for G in results if G == 0)
         n = len(results)
         games_per_s = n / max(time.time() - t0, 1e-9)   # collect+update per the nashpg convention
         with open(metrics_path, "a") as f:
-            # per_game [[learner_deck, opponent, G], ...] — the per-matchup breakdown the failure
-            # investigation lacked (pooled win-rate masked the dead dragapult/iono columns).
+            # per_game [[learner_deck, opponent, G, end], ...] — the per-matchup breakdown the
+            # failure investigation lacked (pooled win-rate masked the dead dragapult/iono
+            # columns). `end` (4th, a dict — read with .get) = win_mode.classify_end telemetry:
+            # win mode + terminal margins (the DISCOVERY-2 deck-out-win readout). Entries are
+            # extended by APPENDING only; readers index 0..2 positionally.
             f.write(json.dumps({"update": it, "games": n, "wins": wins, "draws": draws,
                                 "losses": n - wins - draws, "n_samples": n_samples,
                                 "games_per_s": round(games_per_s, 2),
-                                "per_game": [[d, o, G] for d, o, G in records]} | stats) + "\n")
+                                "per_game": [[d, o, G, e] for d, o, G, e in records]} | stats) + "\n")
         # Vs a FIXED opponent (rulebased/random/frozen) winrate is a genuine progress signal;
         # under --opponent self it is ~.5 by construction (mirror) — use eval_ppo.py there. The
         # update diagnostics (value fit / entropy / KL) matter in every mode.
@@ -288,6 +328,21 @@ def main() -> int:
     ap.add_argument("--minibatches", type=int, default=4,
                     help="shuffled minibatches per epoch (per-minibatch advantage normalization)")
     ap.add_argument("--vf-coef", type=float, default=0.5)
+    ap.add_argument("--shape", default="none", choices=["none", "prizediff"],
+                    help="prizediff: potential-based reward shaping, Phi = prize differential "
+                         "(ppo_model.prize_potential) relative to the game's first recorded "
+                         "decision; per-game shaped rewards telescope to exactly G (margin not "
+                         "farmable). Stage B(b) of the critic-detrending plan. NOTE: per-step "
+                         "returns then span ±(1+scale) — the ±1 envelope read is advisory.")
+    ap.add_argument("--shape-scale", type=float, default=0.5,
+                    help="s in r += s*dPhi (prizediff); 0.5 keeps per-KO swings (1-3 prizes = "
+                         "0.08-0.25) subordinate to the terminal ±1")
+    ap.add_argument("--value-balance", default="none", choices=["none", "winloss"],
+                    help="winloss: balance win/loss sample mass in the VALUE loss (per-sample "
+                         "weights, capped + mean-1-renormalized; ppo_model.PPO step 1c). The "
+                         "Stage B(a) fix for the critic's time-proxy hedging under ~90%%-loss "
+                         "batches (work_log 2026-07-03 'later 2'). vw_* jsonl keys log the "
+                         "applied weights.")
     ap.add_argument("--ent-coef", type=float, default=0.01)
     # Rollout / loop control.
     ap.add_argument("--games-per-update", type=int, default=16,

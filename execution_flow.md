@@ -54,13 +54,12 @@ Files:
 | `starter_rl_kaggle.py` | training (legacy) | RL + MCTS self-play; the original trainer. |
 | `train_reinforce.py` | training (retired) | plain REINFORCE; tried, regressed (removed — git history). |
 | `eval.py` | **scoring** | pits two agents head-to-head and reports win rates + CI + Elo. |
-| `eval_mymodel.py` | scoring (extra) | Lucario-mirror win-rate signal for the BC `MyModel`. |
+| `eval_mymodel.py` | scoring (retired) | BC-`MyModel` Lucario mirror; removed with the BC line (git history). |
 | `kaggle/push_sweep.py` | **offload** | ships the `train_ppo.py` closure to Kaggle script-kernels for heavy runs. |
 
 Where each loads its deck: `utils/run_smoketest_battle.py` reads a CSV (`--deck`, default `deck.csv`);
 `eval.py` model-agents use `sample_deck` (a list baked into `tcg_model.py`); `train_ppo.py` /
-`eval_ppo.py` load `decks/<name>.csv` per `--decks`;
-`eval_mymodel.py` reads `deck.csv` (the Lucario deck).
+`eval_ppo.py` load `decks/<name>.csv` per `--decks`.
 
 ---
 
@@ -516,16 +515,14 @@ STEP · many battles, seat-swapped
 ```
 
 Grep: `grep -n "def _play_one\|def play_match" eval.py`. The same shape (route by `yourIndex`,
-seat-swap by `i % 2`) appears in `eval_mymodel.py::play` and, with a single agent, in
-`utils/run_smoketest_battle.py::play_one`.
+seat-swap by `i % 2`) appears, with a single agent, in `utils/run_smoketest_battle.py::play_one`.
 
 </details>
 
 <details>
 <summary>▸ 5b · The modes & the other eval tools</summary>
 
-`eval.py --mode` (default `battery`; `--games 20`, `--baseline-games 200`, `--search-count 4`,
-`--agent-kind {mcts,sampled}`):
+`eval.py --mode` (default `battery`; read the current flags from `python eval.py --help`):
 
 ```
 battery  (default)  a sanity battery of matchups (random-vs-random ~50% validates the harness;
@@ -537,14 +534,8 @@ sprt                a sequential ship/no-ship A/B test of two checkpoints — st
                     evidence is decisive. e.g. "VERDICT: ACCEPT H1 — model:A is BETTER (ship)."
 ```
 
-The other eval tool:
-```
-eval_mymodel.py    Lucario MIRROR (deck.csv both sides, search-count 10); "is this checkpoint any
-                   good on a clean skill test?"  -> win% + CI per agent×opponent cell.
-```
-
-Watch the **deck axis**: `eval.py` model-agents play `sample_deck`; `eval_mymodel.py` plays
-`deck.csv` (Lucario). Win rates across different decks (or different `--search-count`) aren't
+Watch the **deck axis**: `eval.py` model-agents play `sample_deck`; `eval_ppo.py` plays
+`decks/<name>.csv`. Win rates across different decks (or different `--search-count`) aren't
 comparable — lock both when comparing.
 
 </details>

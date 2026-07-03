@@ -41,7 +41,7 @@ DATASET_SLUG = "poketcg-ppo-code"
 # decks/<name>.csv and call all_card_data() AT IMPORT -- so decks/ MUST ship too). copy2 flattens
 # each path to its basename; run_ppo.py rebuilds decks/ and utils/ beside the flat modules.
 # eval_ppo.py is not in the closure but ships so a kernel/session can also run the matrix eval.
-CODE_FILES = ["train_ppo.py", "ppo_model.py", "tcg_model.py", "eval.py", "eval_mymodel.py",
+CODE_FILES = ["train_ppo.py", "ppo_model.py", "tcg_model.py", "eval.py", "win_mode.py",
               "eval_ppo.py", "utils/run_smoketest_battle.py",
               "game_agents/rulebased/lucario.py", "game_agents/rulebased/abomasnow.py",
               "game_agents/rulebased/dragapult_ex.py", "game_agents/rulebased/iono.py"]

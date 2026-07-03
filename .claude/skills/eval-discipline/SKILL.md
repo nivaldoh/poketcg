@@ -3,7 +3,7 @@ name: eval-discipline
 description: >-
   Run the right eval harness and draw only the conclusions it supports. Use when comparing
   checkpoints or agents, claiming the model progressed or regressed, picking a gauntlet / SPRT
-  signal, interpreting eval.py / eval_mymodel.py / eval_ppo.py
+  signal, interpreting eval.py / eval_ppo.py
   results, judging a PPO training run's health from its metrics jsonl (the ev_true_pre holdout
   critic gate vs in-sample explained_var), or selecting a checkpoint. Enforces a trustworthy n,
   overlapping Wilson CIs over point estimates, mirror vs deck-confounded matchups, anchored (not
@@ -23,14 +23,12 @@ drift.
 | Compare checkpoints/agents broadly, rough Elo | `eval.py` | `sample_deck` battery / round-robin | the primary Stage-1 signal |
 | "Did this checkpoint progress/regress?" — one comparable scalar | `eval.py --mode gauntlet` | vs the FROZEN hash-pinned anchor (+ random, teacher) | track the SKILL axis (mirror vs anchor); vs-random saturates |
 | "Ship this change?" — A-vs-B verdict | `eval.py --mode sprt` | `--checkpoint` vs `--baseline-checkpoint`, seat-swapped | sequential, controlled error, fewest games; "inconclusive" is valid |
-| Is the BC `MyModel` any good on a clean skill test | `eval_mymodel.py` | Lucario **mirror** (same deck both sides) | needs `TORCHDYNAMO_DISABLE=1`; isolates skill |
 | "Did PPO training beat its untrained init / the field?" | `eval_ppo.py` | deck×opponent matrix vs the rule-based field, seat-swapped | mirror diagonal (`*`) = the skill read; off-diagonal deck-confounded. IN-DISTRIBUTION by design (training field == eval field). `--skip-baseline` for cheap per-checkpoint learning curves. Sampled mode is the honest headline (greedy of an untrained net is degenerate). `TORCHDYNAMO_DISABLE=1` |
 | "Is this PPO training run healthy?" / "did an `update()` change break something?" | `train_ppo.py` metrics jsonl + `ppo_model.py` self-tests | — (telemetry, no games) | read per **`ppo-health-reference.md`** (this skill dir); self-tests: `TORCHDYNAMO_DISABLE=1 python ppo_model.py` and `… --update-test` |
 
 Read each harness's current flags/defaults at use time: `python eval.py --help` (incl. `--mode`),
-`python eval_ppo.py --help`, `python train_ppo.py --help`, `TORCHDYNAMO_DISABLE=1 python
-eval_mymodel.py --help`. They differ across scripts and will drift — don't hardcode them in this
-skill.
+`python eval_ppo.py --help`, `python train_ppo.py --help`. They differ across scripts and will
+drift — don't hardcode them in this skill.
 
 ## PPO training-run health (Layer-1) — reading order
 

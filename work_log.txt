@@ -487,3 +487,449 @@ random-mix arm's mirror tax, with a curriculum that stays on-distribution.
   --games-per-update 400); eval_ppo.py --games 200 --skip-baseline --decks lucario --ckpt
   out/ppo_epsmix{75,150,225,300}.pth; eval_ppo.py --games 200 --baseline out/ppo_epsmix_init.pth
   --ckpt out/ppo_epsmix150.pth. Logs: out/ppo_epsmix_{train,curve,matrix}.log.
+
+2026-07-02 (later 3) — WITHIN-GAME CREDIT PROBE BUILT (the "per-decision V spread" diagnostic from
+the post-fix-gate entry's Next; tests the matchup-only-critic suspect behind the ~30% reward-rich
+plateau). Two arms; diagnostic RUN in flight, verdict entry to follow.
+- Code (ppo_model.py): module-level split_game_segments / signed_drift / v_spread_stats (pure
+  Python, ddof=0 so the ANOVA identity is exact and n=1 cases are 0.0 not NaN) + 4 always-on
+  stats wired into update() next to ev_true_pre (act-time V, before buffer.clear()) and appended
+  to STATS_KEYS → flow into the metrics jsonl with zero train_ppo changes: v_within_std,
+  v_between_std, v_within_frac (within-game share of V variance), v_drift_signed (2nd-half −
+  1st-half mean V, × G — the DISCRIMINATING readout). THEORY-REVIEW (in the docstring): with
+  game-constant realized targets (γ=1) any within-game V spread mechanically LOWERS ev_true_pre,
+  so that gate structurally favors game-constant V and can never reward state-awareness; and
+  game-constant V ⇒ GAE A_t = λ^(T−1−t)(G−c) — λ-recency-only credit. Selftests extended with
+  exact invariants (single-segment ⇒ v_between_std==0; single-decision episodes ⇒ all-zero).
+- Code (probe_credit.py, NEW; local tooling, outside the submission boundary): offline probe for
+  EXISTING ckpts (train_ppo has no --load; eval_ppo never runs the critic) — --ckpt comma list,
+  deck×opponent grid, --games/cell via the training decision path (PPO.select_action, sampling),
+  ONE game per collect_games call for exact (V-seq, G) alignment. Reports per cell + pooled: the
+  4 stats, drift±SE, per-decision ev_true, 3-level V-variance decomposition (between-cell /
+  between-game / within-game), matchup-identity shortcut bound (game-level = the prior entry's
+  CAVEAT bound, + decision-weighted), ev_cellmean_v (V replaced by its cell mean — ev_true ≈ this
+  ⇒ within-cell variation adds nothing). Caveat noted in docstring: seat pinned to 0 at
+  n_games=1 (training alternates; engine coin-flips firstPlayer, so likely neutral, unverified).
+- Verified: python ppo_model.py + --update-test PASS (new exact asserts); 2-upd train smoke →
+  4 finite v_* keys in out/ppo_vprobe_smoke_metrics.jsonl (within_frac 0.78/0.43 — V does vary
+  within games at init, magnitude TBD vs drift); probe smoke (1 cell, 4 games vs random) → runs
+  end-to-end, shares sum to 1, no-contrast cells print '-'.
+- In flight: probe_credit.py --ckpt out/ppo_epsmix_init.pth,out/ppo_epsmix150.pth --games 50
+  (full 4×4; init = noise floor) → out/probe_credit_epsmix.{log,json}. Verdict logic
+  pre-registered: trained ≈ init on v_within_frac/v_drift_signed AND ev_true ≈ bound/
+  ev_cellmean_v ⇒ matchup-only CONFIRMED ⇒ plateau lever = within-game critic signal, not more
+  curriculum; trained drift >> init noise floor ⇒ state-aware, suspect weakened.
+
+2026-07-02 (later 4) — CREDIT PROBE EXECUTED (probe_credit.py, ppo_epsmix_init vs ppo_epsmix150,
+full 4×4, 50 games/cell = 800 games/ckpt, seed 11; out/probe_credit_epsmix.{log,json}). Verdict
+row fired: "trained drift >> init noise floor ⇒ state-aware, suspect weakened" — the STRICT
+matchup-only-critic hypothesis is REFUTED, but within-game credit is WEAK and ADVERSELY SIGNED
+exactly in the reward-rich cells.
+- Noise floor (init): total V var 0.0029; shares between-cell 0.124 / between-game 0.358 /
+  within-game 0.518; pooled v_drift_signed −0.0074 ±0.0014; ev_true −0.006 = ev_cellmean_v
+  (bounds +0.066 game-level / +0.101 decision-weighted) — knows nothing, as expected.
+- Trained (ckpt150): total V var 0.0970 (33× init); shares between-cell 0.603 / between-game
+  0.149 / within-game 0.248 (absolute within-game var 0.024 ≈ 16× init — real within-game V
+  movement, not a share artifact); pooled v_drift_signed +0.0244 ±0.0075, separated from the
+  init floor by ~4 SE → V does drift toward the realized outcome inside games. Decisions/game
+  doubled (16.0k → 31.9k per 800) — trained games run longer.
+- BUT the drift is heterogeneous and wrong-signed where reward is richest: the vs-lucario
+  column (the win-richest cells: 15/10/8/4 wins of 50) is NEGATIVE — abom −0.116±0.039,
+  iono-deck −0.128±0.026, dragapult −0.075±0.039, lucario mirror −0.049±0.043 — while the
+  mostly-lost dragapult/iono columns are strongly POSITIVE (+0.066..+0.124): the critic tracks
+  deterioration in losing matchups but moves AWAY from the outcome within the games it can win
+  [THEORY-REVIEW: per-cell drift sign interpretation; win/loss-conditioned decomposition not
+  yet computed]. ev_true +0.055 < ev_cellmean_v +0.085 < decision-weighted bound +0.120: per-
+  decision V still UNDERPERFORMS its own cell-mean projection on outcome prediction (expected
+  mechanically — the gate can't reward state-awareness — so this is NOT counter-evidence).
+- VERDICT: the critic is ~60% matchup-identity by variance but genuinely state-aware within
+  games; "no within-game credit" is dead as THE plateau explanation. REFINED suspect for the
+  ~30% reward-rich plateau: within-game credit is weak (|drift| ~0.02-0.13 on a ±1 scale) and
+  MISCALIBRATED in the very cells where wins occur (vs-lucario negative drift → GAE advantages
+  there are built on V trajectories that move against the outcome). Next lever candidates:
+  win/loss-conditioned drift decomposition (cheap, same JSON pattern), then within-game reward
+  shaping / critic features if the miscalibration holds.
+- Does NOT prove: WHY vs-lucario drift is negative (rising-V-in-losses vs falling-V-in-wins
+  undecomposed; possible game-length confound — drift uses half-split means); that weak credit
+  CAUSES the plateau (correlational); transfer of these numbers to the training distribution
+  (probe is full-strength field only, no @0.25 games; ev_h in training read higher ~+0.16);
+  seat effects (probe pins learner to seat 0, caveat in probe_credit.py docstring).
+- Cmds: TORCHDYNAMO_DISABLE=1 python probe_credit.py --ckpt
+  out/ppo_epsmix_init.pth,out/ppo_epsmix150.pth --games 50 --json out/probe_credit_epsmix.json
+  (~13 min local). Standing telemetry: the same 4 v_* keys now land in every train_ppo metrics
+  jsonl line (see the 'later 3' entry).
+
+2026-07-03 — WIN/LOSS-CONDITIONED DRIFT DECOMPOSITION EXECUTED (the "Next lever" of the 'later
+4' entry: is the vs-lucario column's negative v_drift_signed falling-V-in-WINS (bug-like) or
+rising-V-in-LOSSES? The old JSON kept only cell aggregates — one equation, two unknowns — so:
+probe extension + focused re-run). Pre-registered rule 3 FIRED: V RISES DURING LOSSES vs lucario
+→ NO implementation bug; the signature is a critic-calibration property.
+- Pre-work code audit (read-only, this session): collect_games' G is absolute-seat-correct (same
+  result==seat convention as eval.py), buffer V = act-time V of learner decision states only,
+  encode_state is learner-perspective on both seats AND exposes opponent threat (opp prizes
+  remaining, in-play count, active HP/energy/ex, statuses), GAE terminal reset correct — and the
+  probe's drift path never runs GAE. Sign/perspective/terminal-bug hypotheses: DEAD (the
+  per-opponent sign pattern also can't be a seat artifact — probe seat pinned 0 across cells).
+- Code (probe_credit.py ONLY; ppo_model/train_ppo/eval_ppo untouched): new helpers raw_drift
+  (= signed_drift(v,1.0), single drift definition preserved), drift_conditional (mean/SE/n of
+  raw ΔV over recorded wins or losses; draws excluded, <2-decision games stay as exact 0),
+  _pmedian, drift_len_corr. New per-cell + pooled JSON keys: drift_win/_se/n_win_rec,
+  drift_loss/_se/n_loss_rec, n_decisions, len_mean/len_median, corr_drift_len, and per-game
+  `games` records {G, n_decisions, drift_raw, v_seq@4dp; drift_raw from the UNROUNDED seq} —
+  slope/quartile/length re-analysis is now an offline JSON read. Reconciliation identity
+  ASSERTED per cell: v_drift_signed·n_recorded = drift_win·n_win_rec − drift_loss·n_loss_rec
+  (RECORDED counts, not w/l which include no-record games). Existing keys untouched.
+- Verified: python ppo_model.py + --update-test PASS (untouched); smoke (lucario vs random, 4
+  games → 2W/2L, both classes) + assert script: keys present, len(games)==n_recorded, per-record
+  len(v_seq)==n_decisions & sums match, identity <1e-9, v_drift_signed==mean(drift_raw·G) <1e-9,
+  raw_drift from rounded v_seq ≈ drift_raw <5e-4, class counts ≤ n_recorded, w+l+d==n_games.
+- Run (2 ckpts × 4 decks × {lucario,iono} × 100 games = 1600 battles, seed 11, ~3 min;
+  out/probe_credit_epsmix_winloss.{json,log}): ckpt150 column-pooled (over 4 deck cells):
+  vs lucario 74W/326L: drift_win +0.365±0.020, drift_loss +0.211±0.010 (~21 SE > 0), signed
+  −0.104 — identity −41.8 = +27.0 (win term) − 68.8 (loss term): the LOSS term dominates 2.5:1.
+  vs iono 13W/387L: drift_win +0.366±0.094, drift_loss −0.102±0.007 (~15 SE < 0), signed +0.110.
+  Replication: all four vs-lucario cells at n=100 stayed negative-signed (−0.044..−0.147) with
+  drift_win>0 AND drift_loss>0 in every cell. Gates: init noise floor |cond. drift| ≤ 0.03
+  (trained 0.10–0.37, ~10–30×) — PASSED with caveat (init drift_loss vs iono +0.0066±0.0017 is
+  small-but-nonzero: feature drift through random weights); length confound — within-class
+  corr(drift,len) moderate (wins −0.36 vs lucario) but the per-game OLS-slope re-read (length-
+  robust, scaled to whole-game V change) CONFIRMS every sign: vs lucario wins +0.70±0.03 /
+  losses +0.41±0.02, vs iono losses −0.19±0.01 → NOT confounded.
+- VERDICT (rule 3 + cross-check): V rises during LOSSES vs lucario while falling correctly
+  during losses vs iono → no code bug anywhere in the chain (audit + decomposition agree). The
+  critic has a large OUTCOME-INDEPENDENT upward V trend specific to competitive matchups
+  (+0.21 per lost game on a ±1 scale) with only a +0.15 win/loss discrimination gap on top.
+  Refined plateau suspect CONFIRMED-SHAPED: within-game credit exists but is dominated by a
+  progress-not-winning trend exactly where wins live — GAE advantages there are computed against
+  a baseline that inflates over the game regardless of play quality. [THEORY-REVIEW: "tracks
+  own-board development / under-weights opponent threat" is the feature-level attribution
+  hypothesis — the data show only the outcome-independent rise; opp features ARE in the encoding.]
+  Next lever = critic signal, not curriculum and not code: candidate probes = feature attribution
+  on V (which inputs drive the rise), win/loss-balanced value-target reweighting, or an
+  opponent-prize-aware shaping term (all deferred — design first).
+- Does NOT prove: that the miscalibration CAUSES the plateau (correlational); transfer to the
+  training distribution (probe = full-strength field only, no @0.25 games); seat effects (--seat
+  DEFERRED — a seat-1 path needs n_games=2 per collect_games call + split_game_segments buffer
+  splitting); comparability to the 50-game run is replication, not CRN (engine RNG unseedable).
+- Cmds: TORCHDYNAMO_DISABLE=1 python probe_credit.py --ckpt
+  out/ppo_epsmix_init.pth,out/ppo_epsmix150.pth --decks all --opponents lucario,iono --games 100
+  --seed 11 --json out/probe_credit_epsmix_winloss.json; smoke: --ckpt out/ppo_epsmix150.pth
+  --decks lucario --opponents random --games 4 --seed 11 --json out/probe_credit_smoke_wl.json;
+  selftests: python ppo_model.py / --update-test. The winloss JSON carries per-game v_seq —
+  future re-analyses (slope, quartiles, length strata) need no engine run.
+
+2026-07-03 (later) — VIZ LAYER BUILT (viz_ppo.py): PNG+HTML reports over the three PPO eval
+surfaces, each figure captioned with its health read
+- What: new viz_ppo.py (stdlib+numpy+matplotlib ONLY — no torch/cg, outside the submission
+  boundary; the repo's first plotting code, dep installed via `pip install matplotlib`, 3.11.0).
+  Three subcommands, one per existing data source; each writes out/viz/<input-stem>/{*.png,
+  index.html} — the html is self-contained (figures base64-embedded) with a brief context
+  caption per figure paraphrasing ppo-health-reference.md / v_spread_stats / probe_credit's
+  interpretation block / eval_ppo's mirror-vs-confounded docstring.
+  * train --metrics out/<prefix>_metrics.jsonl: rolling win rate (Wilson-pooled), per-opponent-arm
+    small multiples (starvation read: full vs @eps arms), per-deck twin, entropy_norm, approx_kl/
+    clip_frac/ratio_max stack, ev_true_pre-vs-explained_var + value_mean/value_loss (the holdout-
+    vs-in-sample trap on one axes), per-head grad norms, adv_std_raw + return min-max envelope
+    (±1 invariant), v_* credit panel when logged. Header tiles incl. the ratio_dev_e0<1e-4
+    invariant as ✓/✗. Missing keys → visible "(not logged in this run)" note, never a crash
+    (v_* absent from all pre-2026-07-02 runs by design).
+  * probe --json out/probe_credit_*.json: per-cell drift heatmaps (v_drift_signed + drift_win/
+    drift_loss when present, color scale SHARED across ckpt tags so init=noise-floor rows compare),
+    per-game V trajectories on normalized game time win-vs-loss (the outcome-independent-rise
+    signature is directly visible: epsmix150 vs lucario shows both classes rising together),
+    drift-vs-length scatter (corr_drift_len annotated), within-frac dot plot. Aggregate-only
+    JSONs (no per-game `games` records) degrade gracefully to heatmap+dotplot.
+  * eval --json out/eval_*.json: win% matrix heatmap (diverging, centered 50%, mirror diagonal
+    outlined, '~' = CI straddles 50%), baseline-vs-trained CI forest plot with CLEARS/REGRESSED/
+    overlap verdicts, checkpoint curves (per-opponent pooled + mirror-only panels, baseline band)
+    when --ckpt was a comma list. Banner when games/cell < 200 (below the CI floor).
+- eval_ppo.py change: new --json arg (default 'auto' → out/eval_<ckpt0-stem>_g{games}_s{seed}.json,
+  'none' to skip) dumping {schema:1, games, seed, modes, decks, opponents, ckpts, results} after
+  the verdict block — the eval matrix finally persists structured (stdout logs are \r-polluted).
+- Verified: train on ppo_epsmix_metrics.jsonl (8 figs, credit panel correctly absent) and
+  ppo_vprobe_smoke_metrics.jsonl (9 figs, v_* present); probe on probe_credit_epsmix_winloss.json
+  (5 figs) and probe_credit_epsmix.json (2 figs, graceful skip); eval end-to-end via a --games 4
+  lucario-mirror plumbing run (8 battles, sub-floor banner correct) + a synthetic full-size 4×4
+  3-ckpt json for layout (matrix/forest/curve all clean). Palette = dataviz reference instance,
+  validator-passed; all-figure eyeball pass done (legend collisions fixed).
+- Cmds: python viz_ppo.py train --metrics out/ppo_epsmix_metrics.jsonl | probe --json
+  out/probe_credit_epsmix_winloss.json | eval --json <from eval_ppo>; open:
+  explorer.exe "$(wslpath -w out/viz/<stem>/index.html)"
+
+2026-07-03 (later 2) — STAGE A FEATURE ATTRIBUTION EXECUTED (plan jiggly-snuggling-orbit: which
+inputs drive the outcome-independent V rise vs lucario?). Pre-registered rule R2 FIRED: the rise
+is mostly CLOCK (turn + deck counters) — time-proxy hedging, the class-imbalance artifact →
+Stage B branch = (a) win/loss-balanced value-loss reweighting PRIMARY, (b) prize-diff PBRS queued.
+- A0 offline pre-read (scratch a0_calibration.py over probe_credit_epsmix_winloss.json):
+  survivorship ELIMINATED as the explanation — epsmix150 vs lucario pooled: meanV(t) rises +0.171
+  over the alive-set grid while the alive games' meanG stays flat (−0.011) → v_excess_rise=+0.182
+  ≫ the 0.05 gate, in all 4 deck cells (+0.085..+0.215); contrast vs iono −0.051 (calibration-
+  consistent). At init, survivorship IS real (g_alive_rise +0.145 vs lucario) but V ignores it.
+- Code (additive, flag-gated): ppo_model.feature_groups() (24 named groups partitioning the 299
+  dense dims via the width constants; partition self-test-asserted) + prize_potential() (= (opp
+  prizes remaining − own)/6 from the dense state; sign self-test-asserted; feeds branch (b) and
+  phi_seq). probe_credit --attrib {none,gxi,ig,both}: grad×input AND IG-Δ (baseline = the game's
+  first decision; midpoint 32 steps, auto-retry 256; per-game drift-completeness ≤0.02 asserted;
+  constant-in-game features get exactly 0) on the buffer's dense_states/state_ids before clear()
+  — NO new engine rollouts; V-recompute invariant ≤1e-4 asserted. Per-cell + per-opponent-column
+  JSON: fine-group drift all/win/loss ±SE, 10-bin win/loss trajectories, SUPER_GROUPS rollups
+  (CLOCK/SCORE/OWN_DEV/OPP_DEV/GLOBAL_OTHER), survivorship calibration curve, fidelity stats;
+  per-game group_drift_<m>@4dp + phi_seq. '--attrib none' output schema-identical (asserted vs
+  the 2026-07-03 smoke JSON). Probe --opponents now accepts @eps (train_ppo noisy-fn pattern).
+  Also: v_spread_stats v_within_frac clamped to ≤1.0 (float-eps could exceed 1; latent selftest
+  flake). Verified: python ppo_model.py + --update-test PASS; 4-game smoke --attrib both + scratch
+  assert script (schema, partition, IG completeness, phi multiples of 1/6) ALL OK.
+- Run (2 ckpts × 4 decks × {lucario,iono,lucario@0.25} × 100 games = 2400 battles, seed 11,
+  ~11 min; out/probe_credit_epsmix_attrib.{json,log}): gxi FAILED its fidelity gate (corr 0.924
+  OK but gap_mean 0.113 > 30%·|drift_loss|=0.058) → IG = arbiter (pre-registered; no sign flips
+  at ≥0.3 share — the two agree qualitatively). epsmix150 vs-lucario column pooled, IG loss-
+  conditioned super-group drifts: CLOCK +0.130±0.003 (~50 SE, share 0.55 of positive mass; init
+  floor 0.000) ≫ OWN_DEV +0.061±0.007 (0.25) > OPP_DEV +0.047±0.007 (0.20); SCORE −0.041±0.002
+  (correctly NEGATIVE — prize features are calibrated); GLOBAL_OTHER ~0. Calibration re-read on
+  fresh games: v_excess_rise +0.080 (>0.05 gate; R0 no). Rules in order: R0 no, R3 no (SCORE
+  negative), R1 no (OWN_DEV share 0.25 < 0.5), R2 FIRES (CLOCK ≥ 0.5).
+- Contrast columns: vs iono the critic's OPP_DEV term is strongly negative in losses (−0.174
+  ±0.005 — opponent threat features DO work and dominate → V correctly falls) while CLOCK is
+  still +0.041; vs lucario@0.25 (the curriculum arm where wins live) the miscalibration is
+  WORST: v_excess_rise +0.265 (alive-set G falls while V rises), CLOCK +0.146 — so the clock
+  hedge transfers to the training distribution; arm-aliasing is NOT needed as an explanation.
+  Unified read: a global "later = higher V" time trend exists in every column; it dominates
+  exactly where threat/score signals are weak (competitive cells) [THEORY-REVIEW: mechanism
+  attribution "class-imbalance time-hedging"; the measured facts are the drifts above].
+- Does NOT prove: that killing the clock trend raises the plateau (Stage C tests by intervening);
+  IG completeness is exact only in the M→∞ limit (gap asserted ≤0.02/game); path-dependence of
+  IG baselines (first-decision baseline is the pre-registered Δ-semantics choice).
+- Cmds: TORCHDYNAMO_DISABLE=1 python probe_credit.py --ckpt
+  out/ppo_epsmix_init.pth,out/ppo_epsmix150.pth --decks all --opponents lucario,iono,lucario@0.25
+  --games 100 --seed 11 --attrib both --json out/probe_credit_epsmix_attrib.json; decision:
+  scratch a2_decide.py (rules R0/R3/R1/R2/R4 in order, IG arbiter).
+
+2026-07-03 (later 3) — STAGE B BRANCH (a) EXECUTED AND GATE-FAILED (win/loss-balanced value-loss
+reweighting; plan jiggly-snuggling-orbit Stage C steps 1-4). Pre-registered probe gate FAILED →
+per plan, NO matrix eval spent; switching to branch (b) prize-diff PBRS.
+- Code (flag-gated, default off): PPO(value_balance="winloss") / train_ppo --value-balance —
+  per-SAMPLE class weights half/n_w, half/n_l from sign(g_true) in the VALUE loss only (policy
+  loss + RAW targets untouched), cap 5.0 then mean-1 renorm, uniform fallback on single-class
+  batches; vw_win/vw_loss/vw_capped in STATS_KEYS (emitted unconditionally, ≡1/1/0 under none).
+  Verified: selftest + update-test PASS incl. a NEW third update-test pass (1w/3l batch: exact
+  weights 2.0/0.667, direction asserts hold); scratch assert_vw_paths.py (all-loss fallback, cap
+  path 1w/11l w/ renorm identity, draws-neutral, flag-off numerical equivalence) ALL OK; 2-update
+  engine smoke: keys present, ratio_dev_e0 2.4e-7, 0-win update → uniform fallback logged.
+- Gate run (exact epsmix replica + --value-balance winloss, 300 upd, seed 0, ~35 min, prefix
+  ppo_wbal): G1 ratio_dev_e0 max 7.6e-6 PASS; G3 last-50 ev_true_pre +0.098 PASS (≥+0.05); G4
+  last-50 train winrate 0.217 vs epsmix 0.228 PASS (|d|=0.010). G2 (±1 return envelope) RE-BASED:
+  the epsmix REFERENCE run itself exceeds ±1 on 184/300 updates (envelope −1.31..+1.05; the
+  linear-head "somewhat outside" caveat in STATS_KEYS) — the plan's hard ±1 was mis-specified at
+  plan time; wbal −1.47..+1.24 is same-order (12% wider), not the multi-unit leak signature →
+  treated PASS-comparable [flagged: gate re-based post-hoc, on the reference's measured behavior].
+  Weights bit: applied vw_win mean 3.3 (max 9→capped), uniform fallback 14/300, cap hit 62/300.
+  Training telemetry looked PROMISING (last-50 v_drift_signed +0.074 vs epsmix +0.000; value_mean
+  −0.33 vs −0.59) — the probe then showed why that was not enough:
+- PROBE GATE (probe_credit --ckpt wbal_init,wbal150,wbal300 --opponents lucario,iono --games 100
+  --seed 11 --attrib gxi; out/probe_credit_wbal_gate.{json,log}; criteria pre-registered on raw V):
+  wbal150 FAIL (vs-lucario pooled drift_loss +0.209±0.008 — NO cut from ref +0.211; gap +0.009 ≪
+  +0.20). wbal300: P1 PASS (drift_loss +0.052, 75% cut) but P2 FAIL — gap +0.018: drift_win FELL
+  with drift_loss (V flattened within games rather than discriminating). P3 PASS both (iono
+  drift_loss −0.216@150/−0.051@300 — that column's calibration IMPROVED/held). VERDICT: balancing
+  de-trends (late) but does not CREATE win/loss discrimination vs lucario → branch (a) alone
+  rejected by the pre-registered gate; matrix not run (no eval spend on a failed probe).
+- Note for the (b) run: wbal ev_true_pre +0.098 < epsmix ref +0.134 (context, not a gate).
+  Checkpoints/logs kept: out/ppo_wbal_* (300 upd), out/probe_credit_wbal_gate.*.
+- Cmds: train_ppo.py --opponent rulebased,rulebased@0.25 --updates 300 --save-every 25 --seed 0
+  --value-balance winloss --out-prefix ppo_wbal; scratch gate_check.py / probe_gate_check.py.
+
+2026-07-03 (later 4) — STAGE B BRANCH (b) BUILT (prize-diff PBRS) + TWO ENGINE DISCOVERIES that
+reshaped it (prize-reading artifact; deck-out win mode). Gate training run launched (ppo_shape).
+- DISCOVERY 1 (obs artifact): the per-decision prize lists are SELECT-TYPE-DEPENDENT. Measured
+  (30 games, learner decisions): at MAIN (selType 0) selects both sides' len(prize) are monotone
+  6→0 (1104 readings, 0 violations); at CARD (selType 1) selects your OWN prize zone can
+  transiently read EMPTY during a prize pick (spurious phi=+1 spike), and pre-deal setup selects
+  read 0/0. encode_state feeds these raw — [RISK/note: the critic SEES those transient features;
+  not fixed here, out of plan scope]. New ppo_model.prize_potential_valid(dense) (MAIN bit via
+  derived _SELTYPE_OFF + prizes-dealt check; 3 constructed-state self-test asserts) gates every
+  phi read: shaping increments span valid readings only; probe phi_seq is now valid-carried-
+  forward + backfilled (matches shaping semantics; V_adj offline read stays exact).
+- DISCOVERY 2 (strategy): THIS policy's wins vs the field are largely DECK-OUT/BENCH-OUT wins
+  while TRAILING on prizes (e.g. learner win at 1-vs-5 prizes taken; several rule-based-lucario
+  games end 6/6 prizes untouched, decided by deck-out). Reframes the Stage-A CLOCK attribution:
+  deck counters are partially TRUE win-mode signal for this policy (A0's flat alive-G still shows
+  the aggregate rise over-extrapolates). Also FALSIFIES the smoke gate corr(phi_last,G)>0.5's
+  premise (prize lead => winning) → gate REVISED (documented deviation): direction semantics are
+  verified by the monotone trace + sign self-test; corr is reported informationally. Post-fix
+  smoke (20 games vs rulebased): telescoping Σrewards==G exact in ALL games (multiset == recorded
+  G), intermediate-reward frac 80%, corr(dPhi,G)=0.50, mean dPhi wins +0.25 vs losses −0.40.
+- Code (flag-gated, default off): train_ppo --shape {none,prizediff} --shape-scale 0.5;
+  collect_games kwargs (probe import untouched by defaults). Phi = prize_potential RELATIVE to
+  the game's first VALID reading (phi_first) → per-game shaped sum telescopes to EXACTLY G (the
+  anti-farming property; REINFORCE prize-diff failure structurally excluded); increments s·ΔΦ
+  land on the previous recorded decision's reward slot (rewards[-2]); terminal = G − s·(phi_last
+  − phi_first). ΔΦ between consecutive valid readings includes opponent prize-takes (modeling
+  choice). [THEORY-REVIEW: PBRS invariance = MDP-optimal-policy theorem; telescoping is exact
+  arithmetic; finite-sample PPO flow changes by design; λ=0.95 front-weights prize-taking.]
+- Verified: selftest + update-test PASS (incl. new prize_potential_valid asserts); 2-update
+  engine smoke --shape prizediff: ratio_dev_e0 ≤ 5e-7, returns within ±(1+s)=±1.5 ([−1.00,+1.25]
+  observed); probe attrib smoke + assert script re-PASS after the phi_seq semantics change.
+- Gate run in flight: train_ppo --opponent rulebased,rulebased@0.25 --updates 300 --save-every 25
+  --seed 0 --shape prizediff --out-prefix ppo_shape (epsmix replica + the one flag). Next: gates
+  (ev_true_pre ≥ +0.10 NEW shaped-target semantics; envelope ±1.5 advisory), probe gate on
+  V_adj = V + 0.5·(phi_t − phi_0) from v_seq+phi_seq, then (only on PASS) ckpt curve + n=200
+  matrix vs epsmix150 (7/16 clears, lucario mirror 29%).
+
+2026-07-03 (later 5) — STAGE B/C VERDICT: BOTH pre-registered critic interventions FAILED their
+probe gates → matrix NOT run for either (no eval spend, per plan jiggly-snuggling-orbit); the
+miscalibration→plateau causal chain is WEAKENED and the refined suspect is the DECK-OUT win mode.
+- Branch (b) gate run (ppo_shape, epsmix replica + --shape prizediff s=0.5): G1 PASS (7.6e-6);
+  G2 PASS under (b) semantics (envelope [−1.49,+1.42] ⊂ ±(1+s)); G4 PASS (last-50 winrate 0.228
+  == epsmix exactly); G3 FAIL (last-50 ev_true_pre +0.044 < the pre-registered +0.10 shaped-
+  target gate, and < the (a) +0.05). Probe gate on V_adj = V + 0.5·(φ−φ0) (out/
+  probe_credit_shape_gate.{json,log}): shape150 P1 FAIL (drift_loss +0.203, 4% cut) / P2 FAIL-
+  NEAR (gap +0.187 — IMPROVED from ref +0.15, drift_win +0.390, but < +0.20 gate) / P3 PASS;
+  shape300 P1 FAIL (+0.165, 22% cut) / P2 FAIL (gap +0.120) / P3 PASS.
+- Cross-branch pattern: (a) de-trends late but KILLS discrimination (wbal300 gap +0.018); (b)
+  RAISES discrimination but keeps the trend (shape150 gap +0.187, trend +0.203). Neither achieves
+  both. In-training last-50 (real keys; NOTE the 'later 3' entry's "epsmix +0.000" v_drift
+  context number was a MISSING-KEY default — epsmix_metrics.jsonl predates the v_* keys, use the
+  probe JSONs for epsmix drift): wbal ev_h +0.099 / v_drift +0.074; shape ev_h +0.044 (shaped
+  targets, not comparable) / v_drift +0.024.
+- REFINED READ [THEORY-REVIEW: interpretation, not measured causality]: given DISCOVERY 2 (wins
+  vs the field are deck-out/bench-out wins while trailing prizes), the CLOCK V-trend is partly
+  TRUE win-mode signal — competitive games get closer to a deck-out win as they lengthen — so
+  purely statistical de-trending (a) erases signal along with bias, and prize-progress credit (b)
+  pays for the WRONG currency (prizes ≠ this policy's win path). The two failures are consistent
+  with one story: the credit signal must reflect the DECK-OUT race (e.g. Φ from opp deckCount /
+  in-play liability, or win-mode-conditioned features), or the strategy itself must be moved off
+  deck-out (the field's real weakness the policy found is an exploit, not "play better TCG").
+- STANDING STATE: --value-balance and --shape are merged, flag-gated, DEFAULT OFF — epsmix150
+  remains the best-balanced checkpoint and the argparse defaults reproduce the epsmix recipe
+  exactly. New standing tools: probe_credit --attrib (gxi/ig, super-groups, calibration curve,
+  phi_seq), ppo_model.{feature_groups,prize_potential,prize_potential_valid}, vw_* jsonl keys.
+  Checkpoints kept: ppo_wbal_*, ppo_shape_* (+ gate probe JSONs) for re-analysis.
+- NEXT-LEVER CANDIDATES (design-first, from all of today's data): (1) deck-out-aware potential
+  (Φ_deck = (own deckCount − opp deckCount)/60 or the in-play-count analog for bench-out; same
+  PBRS scaffold, now win-mode-aligned; also test compose a+b — (a) fixes class mass, (b) fixes
+  currency); (2) fix the select-type obs transients the critic SEES (CARD-select prize/zone
+  artifacts in encode_state — DISCOVERY 1 showed the inputs themselves flicker); (3) the still-
+  dead full-strength iono column / curriculum shape. (1) is the direct continuation; measured
+  basis: 0-violation MAIN readings, deck-out win records, shape150's discrimination gain.
+- Cmds: train_ppo.py --opponent rulebased,rulebased@0.25 --updates 300 --save-every 25 --seed 0
+  --shape prizediff --out-prefix ppo_shape; probe_credit.py --ckpt out/ppo_shape_init.pth,out/
+  ppo_shape150.pth,out/ppo_shape300.pth --decks all --opponents lucario,iono --games 100 --seed
+  11 --attrib gxi --json out/probe_credit_shape_gate.json; scratch probe_gate_check.py <json> adj.
+
+2026-07-03 (later 6) — WIN-MODE TELEMETRY BUILT + FIRST MEASUREMENT (plan idempotent-dazzling-
+petal): DISCOVERY 2 is now a measured standing readout — 83% of epsmix150's wins are DECK/BENCH-
+OUT (CI 73-89), 59% taken while TRAILING on prizes — and the offline Φ_deck read FAILED its
+pre-registered gate, so lever (1) is rejected WITHOUT spending a training run.
+- Code (pure-additive telemetry; no training/eval-math change — verified, see gates): NEW
+  win_mode.py = the ONE shared terminal-obs classifier classify_end(obs, seat): engine RESULT-
+  log reason (type 23: 1=prize/2=deck/3=bench/4=effect — was never read anywhere in the repo)
+  + mode_counts (count-inferred fallback, kept PERMANENTLY as the consistency channel) +
+  seat-relative terminal margins (prizes/deck/in-play/prize_diff/turns). Consumers: train_ppo
+  collect_games records are now 4-tuples (deck, opp, G, end) → per_game jsonl entries [d,o,G,
+  end-dict] (APPEND-only; viz/probe read 0..2 positionally); eval._play_one returns (result,
+  end), play_match gains opt-in ends_out (SPRT/gauntlet call sites unchanged); eval_ppo
+  run_match → parallel end_stats[tag][mode][deck][opp] JSON block (win/loss mode histograms,
+  trailing_win_n, prize_diff means, compact per-game [[win,mode,prize_diff,turns]]) — the
+  [w,l,d,p,lo,hi] cell 6-tuple stays FROZEN. probe_credit: valid_carried_seq factored out of
+  Attributor.game; every recorded game now gets phi_seq (same semantics, now --attrib or not)
+  + NEW phi_deck_seq/phi_board_seq (ppo_model.deck_potential/board_potential: (own−opp)/60
+  deck, (own−opp)/6 in-play; HIGHER = opp closer to deck/bench-out; selftest sign+index
+  asserts) + "end"; cell rows + pooled gain win_modes/loss_modes/trailing_win_n/prize_diff_*/
+  turns_mean. viz_ppo: 4 new figs+captions (train win_modes = rolling mode composition +
+  trailing-win share; probe drift_by_mode + end_margin; eval end_modes), all None-guarded on
+  old files.
+- Verified (ladder a-d): win_mode/ppo_model selftests + --update-test PASS; 20-game consistency
+  smoke: mode == mode_counts on 20/20 inferable games, aggregates reconcile exactly, phi
+  multiples of 1/6; valid_carried_seq unit semantics (backfill/carry/all-invalid); --attrib gxi
+  path intact; 2-update train smokes plain + --shape prizediff: ratio_dev_e0 ≤ 4.8e-7, returns
+  in ±1 / ±1.5, wins == Σ win_modes EXACT per update; viz backward-compat on epsmix jsonl +
+  shape_gate probe json + epsmix150 eval json (note-not-logged sections, 0 KeyErrors).
+- TRANSIENT MINI-MEASUREMENT (DISCOVERY-1 generalization test): 30 games, 1177 decisions, 294
+  non-MAIN readings × 4 slots (own/opp deck, own/opp in-play): ZERO outside the bracketing-MAIN
+  envelope, zero spurious-zero reads. The CARD-select transient is prize-list-SPECIFIC; the
+  prize_potential_valid gate on deck/board reads is conservative-but-unnecessary (kept for
+  uniform semantics). Method note: no monotonicity check (Iono shuffles hands back into decks).
+- MEASUREMENT RUN (out/probe_credit_epsmix_endmode.{json,log}, epsmix_init+150, lucario+iono
+  columns, 100 games/cell, seed 11; viz report out/viz/probe_credit_epsmix_endmode/):
+  - epsmix150 pooled: wins 81/800 = prize 14 / deck 55 / bench 12 → attrition share 83%
+    (Wilson 73-89); trailing-prize wins 48/81 = 59% (48-69). Init: 57/58 wins deck-out, 56/58
+    trailing — THE ATTRITION EXPLOIT EXISTS FROM INIT; training added the first prize wins
+    (1→14) but the win mode is unchanged.
+  - Per-cell: vs lucario, 3 of 4 decks win EXCLUSIVELY by trailing deck-out (lucario 20/20,
+    dragapult 10/10, iono 10/10, pdW ≈ −3.3..−4.0); abomasnow is the exception (10/25 prize
+    wins, pdW +0.8 — the one deck that wins prize races). vs IONO (dead column): 16 wins/400,
+    mostly bench-out while AHEAD on prizes (pdW positive!); losses ~80% PRIZE-OUT at pdL −4.4..
+    −5.0 in the longest games (turns 13+). MECHANISM READ [THEORY-REVIEW: interpretation]:
+    Iono's deck recycles itself (hand-shuffle effects), so the policy's one weapon — the deck-
+    out race — is structurally ineffective there; iono simply races prizes past us.
+  - Loss-mode shift init→150: bench-out 525→203 (learner learned to keep Pokémon in play),
+    converted into prize-out losses 215→486.
+  - drift_by_mode fig: vs lucario the V-rise-in-losses (+0.23) is UNIFORM across loss modes
+    (prize-out losses drift as much as deck losses) — the CLOCK trend is not attrition-loss-
+    specific.
+- OFFLINE Φ_deck GATE (scratch phi_deck_offline.py over the new JSON; V_adj = V + s·(φ_deck −
+  φ_deck_0), the shape-gate pattern; pre-registered: lucario-column gap ≥ +0.20 AND drift_loss
+  not worsened): FAILED at every s ∈ {0.25, 0.5, 1.0} — gap +0.115/+0.132/+0.167 (raw +0.097)
+  and drift_loss WORSENS +0.209 → +0.231/+0.252/+0.296. The win-mode-specific read (the new
+  capability) shows Φ_deck IS win-mode-aligned (deck/bench-win drift +0.324→+0.414@s=0.5 while
+  prize-win drift stays ~+0.21) but it pays LOSSES the same currency — attrition is
+  bidirectional in long games. board/deck+prize compositions: same failure shape. Sanity:
+  corr(ΔΦ_deck, G) lucario +0.21, iono −0.16 (negative — more evidence the deck race is the
+  wrong frame vs iono); φ_deck_last in deck-mode wins +0.291 (n=55). → NO Φ_deck training run;
+  eval spend saved, per plan.
+- STANDING STATE: epsmix150 still the best-balanced ckpt; telemetry now answers "HOW does it
+  win/lose" everywhere (metrics jsonl per_game, eval end_stats, probe games records). NEXT-
+  LEVER implications from the data: the plateau story is now "policy = attrition exploit that
+  transfers only where decks deplete" — candidate levers reordered: (i) the iono column needs
+  prize-race competence (its losses are prize-outs, not attrition losses; no potential over
+  deck counts can help); (ii) credit levers must discriminate WITHIN the attrition mode (the
+  uniform loss-mode drift says de-trending/currency fixes alone don't) — e.g. win-mode-
+  conditioned baselines; (iii) abomasnow shows prize-race wins ARE learnable (10/25) — study
+  what differs there. All three are design questions; the telemetry to gate them is now in
+  place.
+- Cmds: python win_mode.py; TORCHDYNAMO_DISABLE=1 python probe_credit.py --ckpt
+  out/ppo_epsmix_init.pth,out/ppo_epsmix150.pth --decks all --opponents lucario,iono --games
+  100 --seed 11 --json out/probe_credit_epsmix_endmode.json; scratch phi_deck_offline.py
+  <json> ppo_epsmix150 / deck_transient_probe.py / assert_endsmoke.py; viz_ppo.py probe --json
+  out/probe_credit_epsmix_endmode.json.
+
+2026-07-03 (later 7) — EVAL-CODE SIMPLIFICATION PASS (session goal: kill redundancy/stale code in
+the eval stack; full audit via subagents + user-approved full prune).
+- LEGACY PRUNE: deleted eval_mymodel.py (BC-MyModel mirror eval — its trainer train_mymodel_bc.py
+  was already gone; sampled_agent/greedy_agent/play had no live consumers) and eval.py's
+  --agent-kind flag + AGENT_KIND global + the lazy-import circular-import RISK block in make_model
+  (both existed only for the retired NashPG/BC bare-policy read). is_policy_select/auto_resolve
+  MOVED to tcg_model.py (the shared agent layer; verbatim) — ppo_model/train_ppo now import them
+  from there, so the ACTIVE stack no longer depends on a legacy eval script and the import-order
+  gymnastics comment in ppo_model shrank to the plain CG_LIB_PATH note.
+- push_sweep.py CODE_FILES: dropped eval_mymodel.py AND added win_mode.py — the closure had been
+  BROKEN since win_mode landed (train_ppo/eval import it; a fresh Kaggle kernel would have
+  ImportError'd). Verified: stage --dry-run stages 11 modules incl. win_mode.py.
+- END-MODE DEDUP: win_mode.summarize_ends(ends) is now the ONE aggregation of classify_end dicts
+  (keys frozen: win_modes/loss_modes/trailing_win_n/prize_diff_{win,loss}_mean/turns_mean);
+  eval_ppo.end_mode_summary = summarize_ends + the per-game "games" records (end_stats JSON block
+  byte-identical in keys — asserted on a smoke eval json); probe_credit.end_mode_stats DELETED
+  (same keys via the shared fn); win_mode selftest extended to cover it.
+- viz_ppo lean pass (output-identical): _roll_sum now feeds rolling_wilson (was a duplicated
+  cumsum); _updates() replaces the triplicated x-axis build; _ink_for() replaces the duplicated
+  luminance→ink logic (_heat + fig_matrix); _section_adder() replaces the 3 copy-pasted add()
+  closures (+_n_figs, no nonlocal); fig_drift_vs_len single-pass with sign*G>0 predicate;
+  fig_matrix unpacks c[3:6] (drift-proof vs the append-only cell contract); dead _arm_counts
+  None-branch + unused _heat fmt param removed. wilson() copy KEPT (documented no-torch/cg
+  boundary).
+- probe_credit lean pass: drift_len_corr now calls _pcorr (was a verbatim copy); Attributor.game
+  computes group drifts ONCE per IG attempt (gd_try removed; completeness assert unchanged);
+  gs hoisted; sign*g>0 predicate; columns iterate dict.fromkeys (stable JSON key order).
+- Doc drift fixed: EVAL.md / execution_flow.md / skills_and_hooks.md / eval-discipline SKILL.md
+  eval_mymodel rows removed or marked retired; README gauntlet example nashpg_a0_final.pth →
+  model0.pth; eval.py "BR dataset" comment → code dataset.
+- Deliberately SKIPPED: renaming the "rulebased" agent name to "lucario" (would fork the opp key
+  in new metrics/eval JSONs away from every standing run for cosmetic gain);
+  starter_rl_kaggle.eval_winrate loop dedup (Kaggle-export stays self-contained); all viz schema-
+  drift branches (verified load-bearing against real out/ files).
+- VERIFIED: python win_mode.py; ppo_model.py + --update-test; train_ppo 1 upd × 2 games; eval_ppo
+  1 cell × 4 games + end_stats key assert; eval.py battery --games 2; probe_credit smoke + attrib
+  both (asserts live, gxi+ig blocks present, columns ordered) — NOTE out/ppo_init.pth is a stale
+  64-wide pre-arch ckpt, used ppo_endsmoke_init.pth; viz re-render on 5 standing inputs (old+new
+  schemas) → figure counts IDENTICAL to pre-change reports (8/10/2/7/3); push_sweep stage
+  --dry-run; zero eval_mymodel/AGENT_KIND refs left in code.

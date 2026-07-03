@@ -578,6 +578,32 @@ def random_agent(obs_dict: dict) -> list[int]:
     obs = to_observation_class(obs_dict)
     return random.sample(list(range(len(obs.select.option))), obs.select.maxCount) # Select at random.
 
+
+# Select-contract helpers shared by the PPO stack (ppo_model.select_action, train_ppo.policy_agent)
+# and any tool that routes decisions the same way: learn only single-select non-NUMBER choice
+# points; auto-resolve everything else.
+def is_policy_select(sel) -> bool:
+    """True for the decisions a policy should score: exactly-one-of-N with a real choice
+    (len(option) > 1) that isn't an all-NUMBER (bench-size style) select."""
+    if sel.minCount != 1 or sel.maxCount != 1 or len(sel.option) <= 1:
+        return False
+    if all(OptionType(o.type) == OptionType.NUMBER for o in sel.option):
+        return False
+    return True
+
+
+def auto_resolve(sel) -> list[int]:
+    """Deterministic fallback for non-policy selects: max NUMBER option, the single option,
+    everything up to maxCount when optional, else the first minCount options."""
+    L = len(sel.option)
+    if all(OptionType(o.type) == OptionType.NUMBER for o in sel.option):
+        return [max(range(L), key=lambda i: sel.option[i].number)]
+    if L == 1:
+        return [0]
+    if sel.minCount == 0:
+        return list(range(min(sel.maxCount, L)))
+    return list(range(sel.minCount))
+
 # For displaying progress.
 def progress(count: int, text: str):
     current = 0

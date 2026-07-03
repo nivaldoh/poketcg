@@ -36,8 +36,9 @@ import torch
 import tcg_model
 from tcg_model import MyModel, mcts_agent, random_agent, sample_deck
 from cg.game import battle_start, battle_select, battle_finish
+from win_mode import classify_end
 # The rule-based agents live in game_agents/rulebased/ as flat modules; add that dir to sys.path so
-# they import by bare name here AND on Kaggle (push_sweep.py stages them flat in the BR dataset).
+# they import by bare name here AND on Kaggle (push_sweep.py stages them flat in its code dataset).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_agents", "rulebased"))
 import lucario as rulebased_lucario
 # Each deck is one clean module exposing `agent` + `my_deck`; they reset their per-game state on the
@@ -87,41 +88,26 @@ def make_iono() -> Agent:
     return Agent("iono", rb_iono.agent, rb_iono.my_deck)
 
 
-# How checkpoints play, set once in main() (like tcg_model.SEARCH_COUNT). "sampled" = no-search
-# bare policy (honest "did the POLICY improve?" read); "mcts" = the default search-on-top agent.
-AGENT_KIND = "mcts"
-
-
 def make_model(path: str) -> Agent:
-    """Load a checkpoint into an Agent that plays sample_deck. Kind set by the module-global
-    AGENT_KIND (main()): "mcts" (depth = tcg_model.SEARCH_COUNT) or "sampled" (no-search)."""
+    """Load a checkpoint into an mcts_agent (depth = tcg_model.SEARCH_COUNT) playing sample_deck.
+    The "model:" name prefix drives the battery Elo bookkeeping (is_model)."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MyModel(128, 2, 256, 1, 1).to(device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
 
-    if AGENT_KIND == "sampled":
-        # RISK (load-bearing): import sampled_agent LAZILY here, NOT at module top. eval_mymodel
-        # does `from eval import wilson` at its top, so a top-level `from eval_mymodel import
-        # sampled_agent` would run before wilson is defined -> circular ImportError. A function-body
-        # import runs only after eval is fully initialized.
-        from eval_mymodel import sampled_agent
+    def fn(obs_dict):
+        with torch.inference_mode():
+            return mcts_agent(obs_dict, sample_deck, model)[0]  # drop training sample
 
-        def fn(obs_dict):
-            with torch.inference_mode():
-                return sampled_agent(obs_dict, sample_deck, model)
-    else:
-        def fn(obs_dict):
-            with torch.inference_mode():
-                return mcts_agent(obs_dict, sample_deck, model)[0]  # drop training sample
-
-    # Keep the "model:" name prefix either way so battery Elo bookkeeping (is_model) still works.
     return Agent(f"model:{os.path.basename(path)}", fn, sample_deck)
 
 
-def _play_one(a: Agent, b: Agent, seat_a: int) -> int:
-    """Play one battle with agent `a` seated at player index `seat_a`. Returns the engine
-    result (0/1 = that seat won, 2 = draw). Shared by play_match and play_match_sequential.
+def _play_one(a: Agent, b: Agent, seat_a: int) -> tuple[int, dict]:
+    """Play one battle with agent `a` seated at player index `seat_a`. Returns (result, end):
+    the engine result (0/1 = that seat won, 2 = draw) and the win_mode.classify_end dict
+    relative to seat_a (win mode + terminal margins — pure-additive telemetry read from the
+    already-held terminal obs). Shared by play_match and play_match_sequential.
 
     Routing follows the canonical driver loop: `obs["current"]["yourIndex"]` says who acts.
     NOTE: the cg engine seeds its own RNG from OS entropy (no seed hook in the ABI), so every
@@ -140,15 +126,19 @@ def _play_one(a: Agent, b: Agent, seat_a: int) -> int:
         actor = a if obs["current"]["yourIndex"] == seat_a else b
         obs = battle_select(actor.fn(obs))
     battle_finish()
-    return obs["current"]["result"]
+    return obs["current"]["result"], classify_end(obs, seat_a)
 
 
-def play_match(a: Agent, b: Agent, n_games: int) -> tuple[int, int, int]:
-    """Play n_games between a and b, swapping seats each game. Returns (wins_a, losses_a, draws)."""
+def play_match(a: Agent, b: Agent, n_games: int, ends_out: list | None = None) -> tuple[int, int, int]:
+    """Play n_games between a and b, swapping seats each game. Returns (wins_a, losses_a, draws).
+    `ends_out`: optional list that receives each game's classify_end dict (a-relative), in game
+    order — opt-in win-mode telemetry; the return shape is unchanged for existing callers."""
     wins = losses = draws = 0
     for i in range(n_games):
         seat_a = i % 2                       # alternate which player index a occupies
-        r = _play_one(a, b, seat_a)
+        r, end = _play_one(a, b, seat_a)
+        if ends_out is not None:
+            ends_out.append(end)
         if r == 2:
             draws += 1
         elif r == seat_a:
@@ -275,7 +265,7 @@ def play_match_sequential(a: Agent, b: Agent, elo0: float, elo1: float,
     n = 0
     for i in range(max_games):
         seat_a = i % 2
-        r = _play_one(a, b, seat_a)
+        r, _ = _play_one(a, b, seat_a)   # end telemetry unused in the SPRT path
         if r == 2:
             x = 0.5; d += 1
         elif r == seat_a:
@@ -544,9 +534,6 @@ def main() -> int:
     ap.add_argument("--max-games", type=int, default=400, help="SPRT game cap (seat-swapped)")
     ap.add_argument("--search-count", type=int, default=4,
                     help="MCTS rollouts per move for model agents (higher = stronger, slower)")
-    ap.add_argument("--agent-kind", choices=["mcts", "sampled"], default="mcts",
-                    help="how checkpoints play: mcts (default) or sampled = no-search bare policy "
-                         "(use for an honest 'did the POLICY improve?' read; --search-count then unused)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -559,8 +546,6 @@ def main() -> int:
     except Exception:
         pass
     tcg_model.SEARCH_COUNT = args.search_count
-    global AGENT_KIND
-    AGENT_KIND = args.agent_kind   # read by make_model; mirrors the SEARCH_COUNT-set-in-main pattern
 
     if args.mode == "gauntlet":
         return run_gauntlet(args)

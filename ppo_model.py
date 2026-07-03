@@ -50,14 +50,14 @@ from torch.distributions import Categorical
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
 
-# Import order is load-bearing: `eval_mymodel` imports `tcg_model` at its own top, which runs
-# the `CG_LIB_PATH` sys.path insert (tcg_model.py, the `_CG_LIB_PATH` block) that makes the
-# vendored `cg` package importable. Keep eval_mymodel above the `cg.api` / `tcg_model` imports.
-from eval_mymodel import is_policy_select, auto_resolve                 # noqa: E402
-# Reuse the card DB + option-target resolver from the shared model layer (already loaded above).
-# `card_table[cardId] -> CardData` (static stats); `get_card(obs, area, index, playerIndex)`
-# resolves an option's referenced card exactly as tcg_model.get_decoder_input does.
-from tcg_model import card_table, card_count, attack_count, get_card    # noqa: E402
+# Import order is load-bearing: importing tcg_model runs the `CG_LIB_PATH` sys.path insert
+# (tcg_model.py, the `_CG_LIB_PATH` block) that makes the vendored `cg` package importable —
+# keep it above the `cg.api` import. Besides the select-contract helpers it provides the card
+# DB + option-target resolver: `card_table[cardId] -> CardData` (static stats);
+# `get_card(obs, area, index, playerIndex)` resolves an option's referenced card exactly as
+# tcg_model.get_decoder_input does.
+from tcg_model import (card_table, card_count, attack_count, get_card,  # noqa: E402
+                       is_policy_select, auto_resolve)
 from cg.api import (                                                    # noqa: E402
     OptionType, EnergyType, CardType, SelectType, SpecialConditionType,
     all_attack, to_observation_class,
@@ -110,6 +110,86 @@ OPTION_DIM = (N_OPTION_TYPES + _OPT_STATIC_DIM + _OPT_PRIMARY_DYN_DIM
               + _OPT_TARGET_DIM + _OPT_ATTACK_DIM + _OPT_MISC_DIM)  # per-option dense width
 N_OPT_CARD_SLOTS = 2                                          # [primary cardId, target cardId]
 N_OPT_ATTACK_SLOTS = 1                                        # [attackId]
+
+
+def feature_groups():
+    """Named groups over the 299 dense state dims -> dict[str, list[int]], built from the same
+    width constants as STATE_DIM so it cannot drift from encode_state. Consumers: the feature-
+    attribution probe (probe_credit.py --attrib) aggregates per-dim attributions into these
+    groups. The groups exactly partition range(STATE_DIM) (self-test-asserted). Card-id
+    embedding slots are NOT dense dims and are handled by the probe separately."""
+    groups = {"turn": [0], "global_other": list(range(1, _GLOBAL_DIM))}
+    for side, base in (("own", _GLOBAL_DIM), ("opp", _GLOBAL_DIM + _SIDE_DIM)):
+        a = base + 6 + N_SPECIAL_COND                          # _active_block start
+        b = a + _ACTIVE_DIM                                    # bench slots start
+        bench_energy, bench_other = [], []
+        for j in range(BENCH_SLOTS):
+            s = b + j * _BENCH_SLOT_DIM                        # [has, hp_frac, n_energy, hist*12, ex]
+            bench_energy += [s + 2] + list(range(s + 3, s + 3 + N_ENERGY_TYPES))
+            bench_other += [s, s + 1, s + 3 + N_ENERGY_TYPES]
+        groups.update({
+            f"{side}_prizes": [base + 0],
+            f"{side}_deck": [base + 1],
+            f"{side}_hand": [base + 2],
+            f"{side}_discard": [base + 3],
+            f"{side}_board_counts": [base + 4, base + 5],
+            f"{side}_status": list(range(base + 6, base + 6 + N_SPECIAL_COND)),
+            # n_energy + energy hist of the active (the monotone energy-accumulation signal)
+            f"{side}_active_energy": [a + 3] + list(range(a + 4, a + 4 + N_ENERGY_TYPES)),
+            # has, hp_frac, maxhp + tools/appear/retreat + weak/resist one-hots + stage flags
+            f"{side}_active_other": [a, a + 1, a + 2] + list(range(a + 4 + N_ENERGY_TYPES, a + _ACTIVE_DIM)),
+            f"{side}_bench_energy": bench_energy,
+            f"{side}_bench_other": bench_other,
+        })
+    return groups
+
+
+def prize_potential(dense_state):
+    """Phi(s) = (opp prizes remaining - own prizes remaining) / 6 in [-1, 1], read from the dense
+    state (indices via the layout constants — the /6.0-normalized `len(ps.prize)` count leads each
+    _side_block). Rises when WE take prizes (taking a prize removes a card from OUR OWN prize
+    zone). Used as the potential for --shape prizediff (train_ppo.py) and logged as phi_seq by
+    probe_credit.py; values are exact multiples of 1/6. Trust it only where
+    prize_potential_valid() — the raw obs prize lists are select-type-dependent."""
+    return float(dense_state[_GLOBAL_DIM + _SIDE_DIM] - dense_state[_GLOBAL_DIM])
+
+
+def deck_potential(dense_state):
+    """Phi_deck(s) = (own deckCount - opp deckCount) / 60 in [-1, 1], read from the dense state
+    (the /60-normalized deckCount is slot base+1 of each _side_block). HIGHER = better for the
+    acting seat: you LOSE by starting your turn with 0 deck cards, so own-minus-opp rising means
+    the opponent hits deck-out first. The win-mode-aligned potential candidate for this policy's
+    measured deck-out win mode (work_log 2026-07-03 DISCOVERY 2). NOT monotone within a game
+    (Iono-style effects shuffle hands back into decks). Read it only where
+    prize_potential_valid() — conservative reuse; whether deck counts share the CARD-select
+    transients of the prize lists is unmeasured (see the deckCount transient mini-measurement in
+    work_log)."""
+    return float(dense_state[_GLOBAL_DIM + 1] - dense_state[_GLOBAL_DIM + _SIDE_DIM + 1])
+
+
+def board_potential(dense_state):
+    """Phi_board(s) = (own in-play count - opp in-play count) / 6 in [-1, 1] (the /6-normalized
+    bench+active count is slot base+5 of each _side_block — the KO/bench-out win-condition
+    signal). HIGHER = better for the acting seat: you LOSE with no Pokémon in play, so
+    own-minus-opp rising means the opponent is closer to bench-out. Same validity caveat as
+    deck_potential: gate reads on prize_potential_valid()."""
+    return float(dense_state[_GLOBAL_DIM + 5] - dense_state[_GLOBAL_DIM + _SIDE_DIM + 5])
+
+
+# selType one-hot offset inside the global block (derived, not a literal: the 8 pre-one-hot slots
+# = _GLOBAL_DIM minus the one-hot and the 2 remain* slots).
+_SELTYPE_OFF = _GLOBAL_DIM - N_SELECT_TYPES - 2
+
+
+def prize_potential_valid(dense_state):
+    """True when prize_potential is trustworthy at this decision. Measured 2026-07-03 (30 games,
+    1104 MAIN readings, 0 violations): at MAIN selects both prize counts are monotone-decreasing
+    from 6; at CARD selects your own prize zone can transiently read EMPTY during a prize pick
+    (a spurious phi = +1 spike), and pre-deal setup selects read 0/0. So: MAIN select AND prizes
+    dealt (not both-zero — a legitimate both-zero cannot occur mid-decision: taking the 6th
+    prize ends the game immediately)."""
+    return bool(dense_state[_SELTYPE_OFF + int(SelectType.MAIN)] == 1.0
+                and (dense_state[_GLOBAL_DIM] > 0 or dense_state[_GLOBAL_DIM + _SIDE_DIM] > 0))
 
 
 # ============================================================================================
@@ -565,6 +645,96 @@ class RolloutBuffer:
 
 
 # ============================================================================================
+# Within-game credit probe (work_log "2026-07-02 (later) — post-fix gate executed", Next item):
+# does the critic discriminate STATES inside a game, or only (deck, opponent) identity?
+# Module-level pure-Python helpers so probe_credit.py can reuse them on offline rollouts.
+# ============================================================================================
+def split_game_segments(state_values, is_terminals, rewards):
+    """RolloutBuffer's flat per-decision lists → per-game segments [(v_seq, G), ...].
+
+    A segment closes at each True terminal flag; its G is that step's patched terminal reward
+    (collect_games writes rewards[-1] = G — the raw reward, so this holds at any γ). Defensive:
+    a trailing unflagged remainder (never produced by collect_games; _selftest-style manual
+    buffers could) is emitted as a final segment rather than dropped, with its own last reward
+    as G (0.0 for an unfinished game)."""
+    segments, seg = [], []
+    for v, done, r in zip(state_values, is_terminals, rewards):
+        seg.append(float(v))
+        if done:
+            segments.append((seg, float(r)))
+            seg = []
+    if seg:
+        segments.append((seg, float(rewards[-1])))
+    return segments
+
+
+def signed_drift(v_seq, g):
+    """One game's outcome-signed V drift: (mean V of 2nd half − mean V of 1st half) × G, balanced
+    halves (odd length drops the middle decision); < 2 decisions → 0.0. Single definition shared
+    by v_spread_stats and probe_credit.py (which needs per-game drifts for a standard error)."""
+    t = len(v_seq)
+    half = t // 2
+    if half == 0:
+        return 0.0
+    return (sum(v_seq[t - half:]) / half - sum(v_seq[:half]) / half) * g
+
+
+def v_spread_stats(segments):
+    """Within-game credit probe over act-time V: does V vary inside games, and does it drift
+    toward the eventual outcome? Tests the MATCHUP-ONLY-CRITIC hypothesis (work_log 2026-07-02
+    CAVEAT: game-level R² of outcome on matchup identity ≥ every observed holdout EV, so
+    ev_true_pre alone cannot rule out a critic that is a matchup lookup with game-constant V).
+
+    Keys (all moments POPULATION/ddof=0 — deliberate: the ANOVA identity within+between = total
+    is then exact and every n=1 case is 0.0 instead of NaN):
+      v_within_std   mean over games of the per-game std of V (1-decision game → 0).
+      v_between_std  std over games of the per-game mean V (single-game buffer → 0).
+      v_within_frac  decision-weighted within-game share of V variance, SS_within/SS_total
+                     (between share = 1 − within share). Guard: SS_total/N ≤ 1e-12 → 0.0
+                     (no-contrast sentinel, mirrors the ev_true_pre var_g guard).
+      v_drift_signed mean over games of (mean V of 2nd half − mean V of 1st half) × G, balanced
+                     halves (odd length drops the middle decision); games with < 2 decisions and
+                     draws (G=0) contribute exactly 0 (dilutes magnitude toward 0, never flips
+                     sign; denominator = all recorded games, stable across updates).
+
+    Interpretation: matchup-only critic signature = v_within_frac ≈ 0 AND v_drift_signed ≈ 0;
+    a state-aware critic shows v_drift_signed > 0 (V drifts toward the realized outcome).
+    v_drift_signed is the DISCRIMINATING readout — THEORY-REVIEW (verified algebra, flagged per
+    convention): with game-constant realized targets (γ=1 ⇒ g_true ≡ G within a game), the
+    residual decomposes as var(G − V) = between-game residual var + pooled within-game V var, so
+    any within-game V spread mechanically LOWERS ev_true_pre — that metric structurally favors
+    game-constant V and can never reward correct state-awareness. Corollary (THEORY-REVIEW,
+    exact at γ=1): if V ≡ c within a game, GAE gives A_t = λ^(T−1−t)·(G − c) — same-sign,
+    state-independent within the game, i.e. only λ-recency credit, no decision-quality credit."""
+    if not segments:
+        return {"v_within_std": 0.0, "v_between_std": 0.0,
+                "v_within_frac": 0.0, "v_drift_signed": 0.0}
+    means, within_stds, drifts, ss_within, n_total, v_sum = [], [], [], 0.0, 0, 0.0
+    for v_seq, g in segments:
+        t = len(v_seq)
+        m = sum(v_seq) / t
+        var = sum((x - m) ** 2 for x in v_seq) / t
+        means.append(m)
+        within_stds.append(var ** 0.5)
+        ss_within += t * var
+        n_total += t
+        v_sum += sum(v_seq)
+        drifts.append(signed_drift(v_seq, g))
+    mu = v_sum / n_total
+    ss_total = sum((x - mu) ** 2 for v_seq, _ in segments for x in v_seq)
+    n_seg = len(segments)
+    mean_of_means = sum(means) / n_seg
+    return {
+        "v_within_std": sum(within_stds) / n_seg,
+        "v_between_std": (sum((m - mean_of_means) ** 2 for m in means) / n_seg) ** 0.5,
+        # min(): SS_within <= SS_total holds exactly, but float summation order can push the
+        # ratio to 1 + eps when SS_between ~ 0; consumers assume a share in [0, 1]
+        "v_within_frac": min(1.0, ss_within / ss_total) if ss_total / n_total > 1e-12 else 0.0,
+        "v_drift_signed": sum(drifts) / n_seg,
+    }
+
+
+# ============================================================================================
 # PPO — mirrors the reference's PPO class (select_action / update / save / load).
 # ============================================================================================
 # Layer-1 telemetry contract (evaluation_harness_report.md §1a): the exact key set update()
@@ -579,6 +749,10 @@ STATS_KEYS = (
     "ratio_dev_e0", "ratio_max", "grad_norm_max", "grad_norm_policy_max", "grad_norm_value_max",
     "entropy_norm", "adv_mean_raw", "adv_std_raw",
     "return_mean", "return_std", "return_min", "return_max", "value_mean",
+    # value-balance telemetry (--value-balance winloss; ≡ 1/1/0 under "none")
+    "vw_win", "vw_loss", "vw_capped",
+    # within-game credit probe (see v_spread_stats): matchup-only-critic diagnostic
+    "v_within_std", "v_between_std", "v_within_frac", "v_drift_signed",
 )
 
 
@@ -593,7 +767,9 @@ def _grad_norm(module):
 
 class PPO:
     def __init__(self, state_dim, option_dim, lr, gamma, eps_clip, k_epochs,
-                 vf_coef, ent_coef, device, gae_lambda=0.95, minibatches=4):
+                 vf_coef, ent_coef, device, gae_lambda=0.95, minibatches=4,
+                 value_balance="none"):
+        assert value_balance in ("none", "winloss"), value_balance
         self.device = device
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -602,6 +778,7 @@ class PPO:
         self.k_epochs = k_epochs
         self.vf_coef = vf_coef
         self.ent_coef = ent_coef
+        self.value_balance = value_balance
         self.policy = ActorCritic(state_dim, option_dim).to(device)
         # Single Adam/LR over ALL params (actor + critic + shared embeddings). The reference uses
         # separate lr_actor/lr_critic; folding them into one LR means the critic can't be tuned to a
@@ -707,6 +884,35 @@ class PPO:
             ret = r + self.gamma * ret
             g_true.insert(0, ret)
         g_true = torch.tensor(g_true, dtype=torch.float32, device=self.device)
+        # 1c. Win/loss-balanced per-sample VALUE-loss weights (--value-balance winloss; Stage
+        #    B(a) of the critic-detrending plan). Measured motive: in ~90%-loss batches the MSE
+        #    gradient is dominated by loss states and the fitted V hedges on time-proxy features
+        #    (CLOCK attribution drift +0.130 vs lucario, work_log 2026-07-03 'later 2').
+        #    Balancing win/loss sample mass makes V a BALANCED-PRIOR conditional estimator, NOT
+        #    E[G|s] under the collection distribution [THEORY-REVIEW: baseline biases upward in
+        #    loss-heavy cells; ev_true_pre is still measured against unweighted outcomes and may
+        #    dip while win/loss discrimination improves — gate on the probe drift, not on the
+        #    historical +0.16]. Class = sign(g_true) (terminal-only reward ⇒ sign(g_true) =
+        #    sign(G); draws stay at 1). Cap before renorm: a 1-win batch would otherwise put
+        #    ~B/2 weight on one sample. Renorm to mean 1 keeps the value-loss scale (vf_coef,
+        #    grad telemetry) comparable. No wins or no losses in the batch → uniform (the
+        #    starved-batch guard). Policy loss and the RAW targets are untouched.
+        w_value = torch.ones_like(g_true)
+        vw_win = vw_loss = 1.0
+        vw_capped = 0.0
+        if self.value_balance == "winloss":
+            n_w = int((g_true > 0).sum())
+            n_l = int((g_true < 0).sum())
+            if n_w > 0 and n_l > 0:
+                half = (n_w + n_l) / 2.0
+                raw_w = torch.ones_like(g_true)
+                raw_w[g_true > 0] = half / n_w
+                raw_w[g_true < 0] = half / n_l
+                vw_capped = float((raw_w > 5.0).float().mean())
+                w_value = raw_w.clamp(max=5.0)
+                w_value = w_value * (w_value.numel() / w_value.sum())
+                vw_win = float(w_value[g_true > 0][0])
+                vw_loss = float(w_value[g_true < 0][0])
         # 2. Keep RAW TD(λ) targets — deliberately NOT z-scored (the PPO-PyTorch reference
         #    z-scores its returns): with terminal-only ±1 reward the targets are already bounded
         #    and well-scaled, and z-scoring ERASES the win/loss signal in a skewed batch (a
@@ -728,6 +934,11 @@ class PPO:
         # var ≈ 0, uninformative; the guard also absorbs the B==1 NaN of unbiased var()).
         var_g = float(g_true.var())
         ev_true_pre = (1.0 - float((g_true - old_v).var()) / var_g) if var_g > 1e-12 else 0.0
+        # Within-game credit probe on the same act-time (holdout) values — computed here, before
+        # buffer.clear(); the buffer's Python floats avoid a device round-trip. Definitions +
+        # interpretation (matchup-only-critic signature): see v_spread_stats.
+        vspread = v_spread_stats(split_game_segments(
+            self.buffer.state_values, self.buffer.is_terminals, self.buffer.rewards))
 
         # 4. Epoch-0 full-batch ratio must be ≡1 BEFORE any optimizer step: old_logp was captured
         #    under this exact θ, so any deviation beyond fp noise means evaluate() failed to
@@ -760,7 +971,9 @@ class PPO:
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = ((V - returns[idx]) ** 2).mean()   # plain MSE; no value-clipping (hurts)
+                # plain (optionally win/loss-balanced) MSE; no value-clipping (hurts).
+                # w_value ≡ 1 under value_balance="none" — identical to the unweighted loss.
+                value_loss = (w_value[idx] * (V - returns[idx]) ** 2).mean()
                 loss = policy_loss + self.vf_coef * value_loss - self.ent_coef * entropy.mean()
 
                 self.optimizer.zero_grad()
@@ -791,7 +1004,7 @@ class PPO:
             surr1 = ratio * adv_n
             surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * adv_n
             policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = ((V - returns) ** 2).mean()
+            value_loss = (w_value * (V - returns) ** 2).mean()
             loss = policy_loss + self.vf_coef * value_loss - self.ent_coef * entropy.mean()
             # k3 KL estimator (Schulman): mean(ratio − 1 − log ratio) ≥ 0, so this is a
             # NaN-free, always-nonneg sanity signal.
@@ -833,6 +1046,15 @@ class PPO:
                 "return_min": float(returns.min()),
                 "return_max": float(returns.max()),
                 "value_mean": float(old_v.mean()),
+                # value-balance telemetry (step 1c): post-renorm class weights + fraction of
+                # samples whose raw weight hit the 5.0 cap. All ≡ 1/1/0 under "none" and on
+                # degenerate (single-outcome) batches — the uniform fallback signature.
+                "vw_win": vw_win,
+                "vw_loss": vw_loss,
+                "vw_capped": vw_capped,
+                # within-game credit probe (act-time V, step 3) — work_log 2026-07-02 (later):
+                # the matchup-only-critic suspect behind the reward-rich plateau.
+                **vspread,
             }
 
         # 5. Clear the now-off-policy buffer.
@@ -864,6 +1086,38 @@ def _selftest(games=2, seed=0):
               vf_coef=0.5, ent_coef=0.01, device=device)
     deck = sample_deck
     checked = 0
+
+    # feature_groups partitions the dense dims exactly (no gap, no overlap, no out-of-range)
+    fg = feature_groups()
+    all_idx = sorted(i for idxs in fg.values() for i in idxs)
+    assert all_idx == list(range(STATE_DIM)), "feature_groups does not partition range(STATE_DIM)"
+    # prize_potential reads the two /6-normalized prize counts: constructed state, own 2 prizes
+    # remaining vs opp 5 -> Phi = (5 - 2) / 6
+    ds = torch.zeros(STATE_DIM)
+    ds[_GLOBAL_DIM] = 2 / 6.0
+    ds[_GLOBAL_DIM + _SIDE_DIM] = 5 / 6.0
+    assert abs(prize_potential(ds) - 3 / 6.0) < 1e-6, "prize_potential index/sign broken"  # float32 eps
+    ds[_SELTYPE_OFF + int(SelectType.MAIN)] = 1.0
+    assert prize_potential_valid(ds), "MAIN select with dealt prizes must be valid"
+    ds[_SELTYPE_OFF + int(SelectType.MAIN)] = 0.0
+    ds[_SELTYPE_OFF + int(SelectType.CARD)] = 1.0
+    assert not prize_potential_valid(ds), "CARD select must be invalid (prize-pick artifact)"
+    ds[_SELTYPE_OFF + int(SelectType.CARD)] = 0.0
+    ds[_SELTYPE_OFF + int(SelectType.MAIN)] = 1.0
+    ds[_GLOBAL_DIM] = ds[_GLOBAL_DIM + _SIDE_DIM] = 0.0
+    assert not prize_potential_valid(ds), "pre-deal 0/0 must be invalid"
+    # deck_potential/board_potential: index cross-check vs feature_groups + sign (higher = opp
+    # closer to deck-out / bench-out). own deck 40/60 vs opp 20/60 -> +20/60; own 4 in play vs
+    # opp 1 -> +3/6.
+    assert [_GLOBAL_DIM + 1] == fg["own_deck"] and [_GLOBAL_DIM + _SIDE_DIM + 1] == fg["opp_deck"], \
+        "deck_potential slots drifted from feature_groups"
+    assert _GLOBAL_DIM + 5 in fg["own_board_counts"] and _GLOBAL_DIM + _SIDE_DIM + 5 in fg["opp_board_counts"], \
+        "board_potential slots drifted from feature_groups"
+    ds2 = torch.zeros(STATE_DIM)
+    ds2[_GLOBAL_DIM + 1], ds2[_GLOBAL_DIM + _SIDE_DIM + 1] = 40 / 60.0, 20 / 60.0
+    assert abs(deck_potential(ds2) - 20 / 60.0) < 1e-6, "deck_potential index/sign broken"
+    ds2[_GLOBAL_DIM + 5], ds2[_GLOBAL_DIM + _SIDE_DIM + 5] = 4 / 6.0, 1 / 6.0
+    assert abs(board_potential(ds2) - 3 / 6.0) < 1e-6, "board_potential index/sign broken"
 
     for _ in range(games):
         obs, start = battle_start(deck, deck)
@@ -918,6 +1172,11 @@ def _selftest(games=2, seed=0):
     assert all(math.isfinite(v) for v in stats.values()), f"non-finite stat: {stats}"
     assert stats["ratio_dev_e0"] < 1e-4, \
         f"epoch-0 ratio != 1 through update() (recompute drift): {stats['ratio_dev_e0']:.2e}"
+    # V-spread probe invariants: the manual tail-terminal makes the whole buffer ONE segment →
+    # between-game std is exactly 0 and the within share is a fraction by construction.
+    assert stats["v_between_std"] == 0.0, \
+        f"single-segment buffer must give zero between-game std: {stats['v_between_std']}"
+    assert 0.0 <= stats["v_within_frac"] <= 1.0, f"v_within_frac not a share: {stats['v_within_frac']}"
 
     print(f"[selftest] OK  STATE_DIM={STATE_DIM} OPTION_DIM={OPTION_DIM} "
           f"N_STATE_SLOTS={N_STATE_SLOTS}  policy_nodes_checked={checked} buffer={n_before} "
@@ -1052,11 +1311,38 @@ def _update_learns_test(seed=0):
     assert all(math.isfinite(v) for v in stats1.values()), f"non-finite stat: {stats1}"
     assert -1.0 - 1e-6 <= stats1["return_min"] and stats1["return_max"] <= 1.0 + 1e-6, \
         f"returns escaped [-1,1]: min={stats1['return_min']} max={stats1['return_max']}"
+    # V-spread probe invariants: two single-decision episodes → no within-game variation
+    # anywhere; all three within-game stats must be EXACTLY 0 (ddof=0 conventions, no NaN).
+    assert stats1["v_within_std"] == 0.0 and stats1["v_within_frac"] == 0.0 \
+        and stats1["v_drift_signed"] == 0.0, \
+        f"single-decision episodes must zero the within-game stats: {stats1}"
     assert g1 > g0 + eps and g2 > g1 + eps, f"good-action prob did not rise: {g0:.4f} {g1:.4f} {g2:.4f}"
     assert b1 < b0 - eps and b2 < b1 - eps, f"bad-action prob did not fall: {b0:.4f} {b1:.4f} {b2:.4f}"
     assert vg1 > vg0 and vg2 > vg1, f"V(S_g) did not rise toward +: {vg0:.4f} {vg1:.4f} {vg2:.4f}"
     assert vb1 < vb0 and vb2 < vb1, f"V(S_b) did not fall toward −: {vb0:.4f} {vb1:.4f} {vb2:.4f}"
     assert stats2["value_loss"] < stats1["value_loss"], "value loss did not decrease across updates"
+    # vw_* telemetry contract under the default: all three are the uniform sentinel.
+    assert stats1["vw_win"] == 1.0 and stats1["vw_loss"] == 1.0 and stats1["vw_capped"] == 0.0, \
+        f"value_balance='none' must report uniform vw_*: {stats1}"
+
+    # ---- UPDATE 3: --value-balance winloss on an UNBALANCED batch (1 win + 3 losses) ----
+    # half=(1+3)/2=2 → raw weights win 2.0 / loss 2/3; no cap; Σw = n_w·half/n_w + n_l·half/n_l
+    # = n_w+n_l = numel, so the mean-1 renorm is exactly a no-op (the no-cap/no-draw invariant).
+    # Direction asserts still hold: balancing reweights the VALUE loss only.
+    ppo.value_balance = "winloss"
+    _populate(ppo.buffer, transitions + [transitions[1], transitions[1]])
+    _set_old_from_current(ppo)
+    stats3 = ppo.update()
+    g3, b3, vg3, vb3 = _measure(ppo, probe)
+    assert set(stats3) == set(STATS_KEYS), f"stats keys drifted: {set(stats3) ^ set(STATS_KEYS)}"
+    assert all(math.isfinite(v) for v in stats3.values()), f"non-finite stat: {stats3}"
+    assert abs(stats3["vw_win"] - 2.0) < 1e-6 and abs(stats3["vw_loss"] - 2.0 / 3.0) < 1e-6 \
+        and stats3["vw_capped"] == 0.0, \
+        f"winloss weights wrong on 1w/3l: {stats3['vw_win']} {stats3['vw_loss']} {stats3['vw_capped']}"
+    assert g3 > g2 and b3 < b2, f"policy direction broke under value balancing: {g3:.4f} {b3:.4f}"
+    assert vg3 > vg2 and vb3 < vb2, f"V direction broke under value balancing: {vg3:.4f} {vb3:.4f}"
+    print(f"[update-test] winloss pass: vw_win={stats3['vw_win']:.3f} "
+          f"vw_loss={stats3['vw_loss']:.3f} vw_capped={stats3['vw_capped']:.3f}")
     print("[update-test] OK")
 
 

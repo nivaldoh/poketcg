@@ -83,12 +83,11 @@ memory (numbers).
 | Harness | Question it answers | Matchup | Key caveat |
 |---|---|---|---|
 | `eval.py` | broad checkpoint/agent comparison + rough Elo | `sample_deck` battery / `--checkpoints` round-robin | Elo only meaningful in a pure mirror; vs-rulebased is deck-confounded |
-| `eval_mymodel.py` | is the BC `MyModel` any good on a clean skill test? | Lucario **mirror** (same deck both sides); set `TORCHDYNAMO_DISABLE=1` | mirror ≈ 50/50, so the value head barely learns |
 | `eval_ppo.py` | did PPO training help, per cell? | 4 decks × 4 rule-based opponents, seat-swapped; diagonal = clean mirror | verdict = trained CI vs `_init` baseline CI (fresh net is not 50%); off-diagonal cells deck-confounded |
 
 Both report W/L/D, win% over decisive games with a 95% Wilson CI, and seat-swap. `eval.py` adds an
-anchored Bradley-Terry Elo over the pool (a stable agent pegged to 0); `eval_mymodel.py` prints its own win-rate targets
-(e.g. ≥48% ≈ strong, >50% beats the teacher) — read them off the tool, they may move.
+anchored Bradley-Terry Elo over the pool (a stable agent pegged to 0). (The BC-`MyModel` mirror
+harness `eval_mymodel.py` was removed 2026-07-03 with the rest of the retired BC line.)
 
 **What we currently believe** (hedged — verify at n≥200, don't trust stale figures):
 - The **untrained `model0` has been the strongest checkpoint**; further training tends to *regress*
@@ -132,7 +131,7 @@ fixed, **hash-pinned** opponent set: `random` (floor; saturates), the frozen anc
 **SKILL** axis, a clean mirror), and the teacher (large-effect **yardstick**, deck-confounded). The
 headline scalar = win% (and implied Elo) vs the frozen anchor — track it across checkpoints. All model
 agents play `sample_deck` (via `make_model`), so this is the *sample_deck* skill axis — a Lucario-deck
-BC checkpoint belongs in `eval_mymodel.py` (which uses `deck.csv`), not here. Pin
+BC checkpoint doesn't belong here (the BC line and its `eval_mymodel.py` harness are retired). Pin
 the anchor by **content hash**, not filename (`out/` is gitignored, names get reused). Anchor = the
 frozen-strongest `model0`, `out/anchor_model0.pth`, sha256
 `5bf4b8ae0cc977dfb98f3a915d994990979d2db6e4ad4a61e5dd99396f8c4122`. Re-running anchor-vs-random over
@@ -163,7 +162,7 @@ are flagged as prior-driven, not data; and a sub-`TRUST_N` (~200) game count pri
 
 ## 6. Roadmap (stages inherit `docs/eval_info.md`; status + acceptance gate added)
 
-- **Stage 1 — outcome metrics — ✅ BUILT** (`eval.py`, `eval_mymodel.py`). *Maintenance:* keep
+- **Stage 1 — outcome metrics — ✅ BUILT** (`eval.py`, `eval_ppo.py`). *Maintenance:* keep
   `--search-count` locked, raise `--games` for tighter CIs, consider adding baselines / a second
   opponent deck for archetype diversity.
 
@@ -199,11 +198,10 @@ python eval.py                                   # default sanity battery
 python eval.py --mode gauntlet --checkpoint out/X.pth        # X vs the frozen anchor -> comparable scalar
 python eval.py --mode sprt --checkpoint out/A.pth --baseline-checkpoint out/B.pth  # is A > B? (controlled)
 python eval.py --checkpoints out/a.pth,out/b.pth # clean mirror round-robin (skill ranking)
-TORCHDYNAMO_DISABLE=1 python eval_mymodel.py      # BC MyModel on the Lucario mirror
 python utils/run_smoketest_battle.py                             # smallest signal that the engine runs at all
 ```
 
-Run `python eval.py --help` / `python eval_mymodel.py --help` for the current flags and defaults
+Run `python eval.py --help` / `python eval_ppo.py --help` for the current flags and defaults
 (don't hardcode them). For *which* harness to use and *what* you may conclude, follow the
 `eval-discipline` skill.
 

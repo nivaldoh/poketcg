@@ -122,7 +122,7 @@ Description of the move effect or additional rule text.
 python eval.py                       # default sanity battery
 python eval.py --games 50            # more games per model matchup (tighter CIs)
 python eval.py --search-count 8      # deeper MCTS for the model (stronger, slower)
-python eval.py --mode gauntlet --checkpoint out/nashpg_a0_final.pth   # one ckpt vs frozen anchor + the 4 rule-based decks
+python eval.py --mode gauntlet --checkpoint out/model0.pth   # one MyModel-arch ckpt vs frozen anchor + the 4 rule-based decks
 ```
 
 What it does (`eval.py`, built on `tcg_model.py` + `game_agents/rulebased/lucario.py`):
