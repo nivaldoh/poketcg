@@ -579,9 +579,9 @@ def random_agent(obs_dict: dict) -> list[int]:
     return random.sample(list(range(len(obs.select.option))), obs.select.maxCount) # Select at random.
 
 
-# Select-contract helpers shared by the PPO stack (ppo_model.select_action, train_ppo.policy_agent)
-# and any tool that routes decisions the same way: learn only single-select non-NUMBER choice
-# points; auto-resolve everything else.
+# Select-contract helpers shared by the SB3 stack (sb3_env.CGEnv, eval_sb3.sb3_agent) and any tool
+# that routes decisions the same way: learn only single-select non-NUMBER choice points;
+# auto-resolve everything else. (Multi-select learning is a planned extension — plan.md Feature 2.)
 def is_policy_select(sel) -> bool:
     """True for the decisions a policy should score: exactly-one-of-N with a real choice
     (len(option) > 1) that isn't an all-NUMBER (bench-size style) select."""

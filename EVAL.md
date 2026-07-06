@@ -83,7 +83,7 @@ memory (numbers).
 | Harness | Question it answers | Matchup | Key caveat |
 |---|---|---|---|
 | `eval.py` | broad checkpoint/agent comparison + rough Elo | `sample_deck` battery / `--checkpoints` round-robin | Elo only meaningful in a pure mirror; vs-rulebased is deck-confounded |
-| `eval_ppo.py` | did PPO training help, per cell? | 4 decks × 4 rule-based opponents, seat-swapped; diagonal = clean mirror | verdict = trained CI vs `_init` baseline CI (fresh net is not 50%); off-diagonal cells deck-confounded |
+| `eval_sb3.py` | how does an SB3 checkpoint fare, per cell? | 4 decks × 4 rule-based opponents, seat-swapped; diagonal = clean mirror | mirror diagonal (`*`) = the skill read; off-diagonal cells deck-confounded; sampled mode is the honest headline |
 
 Both report W/L/D, win% over decisive games with a 95% Wilson CI, and seat-swap. `eval.py` adds an
 anchored Bradley-Terry Elo over the pool (a stable agent pegged to 0). (The BC-`MyModel` mirror
@@ -162,7 +162,7 @@ are flagged as prior-driven, not data; and a sub-`TRUST_N` (~200) game count pri
 
 ## 6. Roadmap (stages inherit `docs/eval_info.md`; status + acceptance gate added)
 
-- **Stage 1 — outcome metrics — ✅ BUILT** (`eval.py`, `eval_ppo.py`). *Maintenance:* keep
+- **Stage 1 — outcome metrics — ✅ BUILT** (`eval.py`, `eval_sb3.py`). *Maintenance:* keep
   `--search-count` locked, raise `--games` for tighter CIs, consider adding baselines / a second
   opponent deck for archetype diversity.
 
@@ -201,7 +201,7 @@ python eval.py --checkpoints out/a.pth,out/b.pth # clean mirror round-robin (ski
 python utils/run_smoketest_battle.py                             # smallest signal that the engine runs at all
 ```
 
-Run `python eval.py --help` / `python eval_ppo.py --help` for the current flags and defaults
+Run `python eval.py --help` / `python eval_sb3.py --help` for the current flags and defaults
 (don't hardcode them). For *which* harness to use and *what* you may conclude, follow the
 `eval-discipline` skill.
 

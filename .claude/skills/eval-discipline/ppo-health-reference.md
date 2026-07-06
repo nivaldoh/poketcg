@@ -5,6 +5,16 @@ sources so evaluating a run doesn't require re-reading them, and records which c
 settled, contested, or ours. Scope: the from-scratch PPO (`ppo_model.py` + `train_ppo.py`),
 telemetry read from `{out_dir}/{out_prefix}_metrics.jsonl` (discover: `ls out/*_metrics.jsonl`).
 
+> **Retirement note (2026-07-06):** the hand-rolled PPO stack this reference documents
+> (`ppo_model.py` / `train_ppo.py` / `eval_ppo.py`) was **retired**. The active successor is the SB3
+> stack (`train_sb3.py` + `eval_sb3.py`), which logs run health through SB3's own logger
+> (`explained_variance`, `approx_kl`, `clip_fraction`) — not the `_metrics.jsonl` / `STATS_KEYS` /
+> `ev_true_pre` telemetry below. The **discipline** (n≥200, Wilson CIs, mirror vs deck-confounded,
+> eval-best not `_final`) is stack-agnostic and unchanged, and the PPO-health **concepts** transfer;
+> but the `ppo_model.py`/`train_ppo.py`-specific recipes and self-tests below are **historical** (the
+> featurization survives in `sb3_features.py`, the findings in `docs/ppo/`). Port them to SB3
+> telemetry if/when needed.
+
 ## Attribution key — every theory claim below carries one
 
 | Label | Source | Weight |
@@ -140,8 +150,8 @@ Diff against `reference_repos/implementation-matters/src/policy_gradients/` by s
 
 ## Standing repo verdicts (pointers — numbers live in the reports, not here)
 
-- **Critic gate PENDING** as of 2026-07-02: next field run must show `ev_true_pre` ≫ 0 sustained,
-  then `eval_ppo.py` matrix vs the ckpt150 anchor. → memory `ppo-failure-investigation-verdict`,
+- **Critic gate (retired-stack finding):** the hand-rolled critic never sustained `ev_true_pre` ≫ 0;
+  its prize-race verdict carries into SB3. → memory `ppo-prize-race-diagnosis`,
   `docs/ppo/ppo_failure_investigation.md`.
 - **Checkpoint selection: eval-best, never `_final`** — curves rise then ERODE. → same report.
 - **Don't re-add a bounding tanh to the value head** (saturated under skewed outcomes); don't

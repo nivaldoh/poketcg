@@ -134,28 +134,32 @@ Key caveats (printed by the tool; from `docs/eval_info.md`):
 - **Deck confound:** win rate vs rule-based mixes agent skill with the deck matchup (`sample_deck` vs Lucario). The *mirror* matches (vs random, ckpt-vs-ckpt — same deck both sides) isolate skill better.
 - **High outcome variance** → wide CIs at small n; raise `--games`. Win% excludes draws (reported separately).
 
-**Current standing:** volatile — read it from the tools, not this file. Run `python eval.py --mode gauntlet --checkpoint out/<ckpt>.pth` (one checkpoint vs the frozen anchor + the rule-based field) or `TORCHDYNAMO_DISABLE=1 python eval_ppo.py` (PPO deck×opponent matrix); dated verdicts live in `work_log.txt` and the memory notes. Standing headline so far: the hand-written rule-based agents remain ahead of every trained checkpoint.
+**Current standing:** volatile — read it from the tools, not this file. Run `python eval.py --mode gauntlet --checkpoint out/<ckpt>.pth` (one checkpoint vs the frozen anchor + the rule-based field) or `python eval_sb3.py --ckpt out/<ckpt>.zip` (SB3 deck×opponent matrix); dated verdicts live in `work_log.txt` and the memory notes. Standing headline so far: the hand-written rule-based agents remain ahead of every trained checkpoint.
 
 **Deferred (Stage 2+, not yet built):** the value-model / Win-Probability-Added process metrics and puzzle suites from `docs/eval_info.md`. WPA needs a *calibrated* value model; ours (the encoder value head) is only weakly trained, and `docs/eval_info.md` warns every value-metric inherits the model's calibration — so this waits until we have a properly trained checkpoint and can validate calibration.
 
 # Training
 
-Two trainer generations plus an unwired data source. The **active** stack is the from-scratch PPO
-(`train_ppo.py`); the original MCTS self-play starter is kept as legacy reference.
+Two trainer generations plus an unwired data source. The **active** stack is the SB3 MaskablePPO
+experiment (`train_sb3.py`); the original MCTS self-play starter is kept as legacy reference. (A
+hand-rolled from-scratch PPO stack preceded SB3 and was retired 2026-07-06 — its featurization
+lives on in `sb3_features.py` and its findings in `docs/ppo/`.)
 
-## 1. PPO from scratch (active): `train_ppo.py`
+## 1. SB3 MaskablePPO (active): `train_sb3.py`
 
-A clean-room PPO stack, independent of `MyModel`/MCTS: `ppo_model.py` (fresh ActorCritic net +
-clipped update; `python ppo_model.py` and `python ppo_model.py --update-test` are its self-tests),
-`train_ppo.py` (game collection + GAE + updates; the default opponent is the rule-based field on
-its own decks, so the training field equals the eval field), and `eval_ppo.py` (deck × opponent
-matrix with Wilson CIs against the saved `_init` baseline). Read the file docstrings and `--help`
-for the contract; run history and verdicts live in `work_log.txt` and `docs/ppo/`
-(`ppo_ceiling_report.md`, `ppo_failure_investigation.md`).
+Built on stable-baselines3 (sb3-contrib MaskablePPO): `sb3_env.py` (`CGEnv`, a gymnasium wrapper
+inverting the cg battle loop into `reset()`/`step()`, with the rule-based opponent field via
+`make_opponent`), `sb3_features.py` (the cg-obs featurization — dense state/option tensors),
+`train_sb3.py` (argparse + env construction + SB3's PPO), and `eval_sb3.py` (deck × opponent matrix
+with Wilson CIs). Read the file docstrings and `--help` for the contract; the upcoming self-play +
+multi-select roadmap is `plan.md`; run history and the PPO-ceiling findings live in `work_log.txt`,
+`sb3_report.md`, and `docs/ppo/` (`ppo_ceiling_report.md`, `ppo_failure_investigation.md`,
+`ppo_saturation_report.md`). SB3 deps (training-side only): `pip install -e
+reference_repos/stable-baselines3` + `pip install sb3-contrib`.
 
-Fast local smoke (a couple of tiny updates, writes checkpoints + metrics jsonl under `out/`):
+Fast local smoke (~4 tiny updates, writes a checkpoint zip under `out/`):
 ```bash
-python train_ppo.py --updates 2 --games-per-update 4
+python train_sb3.py --smoke
 ```
 
 ## 2. Legacy self-play starter (`starter_rl_kaggle.py`)
@@ -200,12 +204,12 @@ Already fetched locally (all under gitignored `data/`): a sample replay `data/re
 
 # Running heavy jobs on Kaggle (operational lessons)
 
-Local hardware is small (WSL2), so heavy training/eval is offloaded to Kaggle script-kernels (infra: `kaggle/push_sweep.py`). Lessons from the NashPG BR-exploitability sweep (`work_log.txt`, 2026-06-29 entry):
+Local hardware is small (WSL2), so heavy training/eval can be offloaded to Kaggle script-kernels. (The PPO-specific sweep driver `kaggle/push_sweep.py` was retired with the hand-rolled PPO stack on 2026-07-06 — recoverable from git at commit `4ee6421` as a template for a future SB3 Kaggle run.) The operational lessons below are general and still apply:
 
 - **Concurrency cap:** Kaggle runs at most **5 concurrent batch CPU sessions**. We pushed 12 kernels at once; the extra 7 were rejected with a session-cap error. **Push in waves of ≤5** and plan the matrix around that cap rather than firing everything at once.
 - **Zombie kernels:** rejected/failed pushes can leave **empty "zombie" kernel records**; re-pushing to those same slugs then fails with a misleading `Notebook not found`. **Use a distinct slug per job** so a failed push doesn't poison the slug.
 - **No CLI delete:** the Kaggle CLI has **no `kernels delete`** — zombie/partial kernels must be removed via the **web UI**.
-- **Throughput:** each CPU kernel ran **~1–1.5 h**; results pull back via the CLI into `kaggle/out_kaggle/`. Net effect of the above: only **6 of 12** kernels completed that sweep.
+- **Throughput:** each CPU kernel ran **~1–1.5 h**; results pull back via the CLI. Net effect of the above: only **6 of 12** kernels completed that sweep.
 
 # How to Submit to this Competition (only do this when explicitly asked)
 See kaggle-submission skill.

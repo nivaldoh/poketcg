@@ -1,3 +1,0 @@
-# Staged dataset/kernel build dirs and pulled kernel outputs (large + regenerable).
-_build/
-out_kaggle/

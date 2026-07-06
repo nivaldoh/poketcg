@@ -11,9 +11,9 @@ code (grep ``reason (int)`` in vendor/cg-lib/cg/api.py):
 
 ``State.result`` (``obs["current"]["result"]``) only says WHO won (0/1 = player index,
 2 = draw). Every driver loop in this repo holds the terminal obs (the loop condition is
-``result < 0``); this module is where it finally gets read. Used by train_ppo.collect_games
-(-> metrics jsonl per_game + probe_credit) and eval._play_one (-> eval_ppo end_stats);
-``summarize_ends`` is the ONE aggregation of those dicts (eval_ppo cells, probe_credit rows).
+``result < 0``); this module is where it finally gets read. Used by ``sb3_env.CGEnv.step``
+(-> the terminal info dict) and ``eval._play_one`` (-> end-stats cells); ``summarize_ends``
+is the ONE aggregation of those dicts.
 
 Consistency channel: ``mode`` (log-derived) and ``mode_counts`` (inferred from terminal
 prize/deck/in-play counts) are BOTH kept permanently. Terminal counts are read at the terminal
@@ -25,7 +25,7 @@ drifting. Smoke recipe: grep ``endsmoke`` in work_log.
 Seat conventions (all fields seat-relative to the ``seat`` argument):
     win        : +1 seat won, -1 seat lost, 0 draw
     prize_diff : opp_prizes_left - my_prizes_left, int in [-6, 6]; POSITIVE = seat is AHEAD on
-                 prizes (same sign convention as ppo_model.prize_potential = (opp - own)/6).
+                 prizes ((opp - own), so higher = better for seat).
                  A "prize-trailing win" is ``win == 1 and prize_diff < 0``.
 
 Local-harness side only — never part of the Kaggle submission bundle (main.py + cg/ + deck.csv).
@@ -119,11 +119,10 @@ def classify_end(obs, seat):
 
 
 def summarize_ends(ends):
-    """classify_end dicts -> the shared end-stats block (eval_ppo end_stats cells, probe_credit
-    cell/pooled rows): win/loss mode histograms (zero counts omitted — read with .get),
-    trailing_win_n (wins while BEHIND on prizes: prize_diff < 0), mean end prize_diff per class
-    (None when the class is empty), and mean length over ALL games. Key names are a frozen
-    contract — viz_ppo reads them from persisted JSON by name."""
+    """classify_end dicts -> the shared end-stats block (e.g. eval end-stats cells): win/loss mode
+    histograms (zero counts omitted — read with .get), trailing_win_n (wins while BEHIND on prizes:
+    prize_diff < 0), mean end prize_diff per class (None when the class is empty), and mean length
+    over ALL games."""
     win_modes, loss_modes = {}, {}
     pd_w, pd_l = [], []
     trailing = 0

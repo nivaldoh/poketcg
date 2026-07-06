@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Eval a train_sb3.py MaskablePPO checkpoint across the deck×opponent matrix — the SB3-stack
-analog of eval_ppo.py (a PARALLEL path: eval_ppo hardcodes ppo_model.ActorCritic and its manifest
-arch string, so it is not modified). Minimal first pass: matrix cells + Wilson CIs only (no
-baseline anchor / manifest / json — deferred with the rest of telemetry parity).
+"""Eval a train_sb3.py MaskablePPO checkpoint across the deck×opponent matrix. Minimal first pass:
+matrix cells + Wilson CIs only (no baseline anchor / manifest / json — deferred with the rest of
+telemetry parity).
 
 The model plays EACH --decks deck against EACH rule-based opponent (its own deck), seat-swapped
 via eval.play_match. The diagonal (same deck both seats) is the clean MIRROR skill read;
@@ -12,7 +11,7 @@ importing SB3 here is fine, the submission boundary only constrains main.py).
 Decision routing matches training exactly: non-policy nodes (and >N_MAX overflow nodes) are
 auto_resolve'd; policy nodes featurize via sb3_env.obs_to_gym (the SAME code path CGEnv uses) and
 go through MaskablePPO.predict with the action mask. `sampled` mode is the honest headline for a
-stochastic policy; `greedy` = argmax (eval-discipline, same convention as eval_ppo).
+stochastic policy; `greedy` = argmax (eval-discipline).
 
     python eval_sb3.py --ckpt out/sb3ppo_sb3.zip --games 20            # smoke (below the n>=200 CI floor)
     python eval_sb3.py --ckpt out/sb3ppo_sb3.zip --games 200           # trustworthy CIs
@@ -37,8 +36,8 @@ from eval import (Agent, play_match, wilson,                           # noqa: E
                   make_rulebased, make_abomasnow, make_dragapult, make_iono)
 from sb3_contrib import MaskablePPO                                    # noqa: E402
 
-# Same registry shape as eval_ppo.OPPONENTS: keys match deck names so the matrix diagonal is a
-# true mirror (eval.py names the Lucario factory make_rulebased).
+# Opponent registry: keys match deck names so the matrix diagonal is a true mirror (eval.py names
+# the Lucario factory make_rulebased).
 OPPONENTS = {
     "lucario": make_rulebased,
     "abomasnow": make_abomasnow,
