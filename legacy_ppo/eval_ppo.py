@@ -50,11 +50,12 @@ sys.path.insert(0, _REPO_ROOT)
 # (load_deck's module) does that setup itself at module top, as do the PPO imports below; importing
 # `eval` re-runs it plus the game_agents/rulebased sys.path insert (idempotent).
 from utils.run_smoketest_battle import load_deck                     # noqa: E402  (model-deck CSV loader; sets CG_LIB_PATH)
-from ppo_model import ActorCritic, STATE_DIM, OPTION_DIM             # noqa: E402
-from train_ppo import policy_agent   # shared wrapper: SAME decision routing train + eval  # noqa: E402
+from legacy_ppo.ppo_model import ActorCritic, STATE_DIM, OPTION_DIM             # noqa: E402
+from legacy_ppo.train_ppo import policy_agent   # shared wrapper: SAME decision routing train + eval  # noqa: E402
 from eval import (                                                    # noqa: E402
     Agent, play_match, wilson, elo_from_winrate,
     make_random, make_rulebased, make_abomasnow, make_dragapult, make_iono,
+    sha256, deck_hash, git_commit,   # comparability-manifest primitives (reused, not reimplemented)
 )
 from win_mode import summarize_ends                                   # noqa: E402
 
@@ -150,6 +151,26 @@ def _fmt_elo(p):
     return f"{e:+.0f}"
 
 
+def build_manifest(args, nets, model_decks):
+    """Comparability manifest — pins each matrix result to checkpoint BYTES (out/ is gitignored,
+    filenames get reused), the code commit, and deck contents. Two matrix JSONs compare only if
+    these match. The eval_ppo analog of eval.run_manifest (which is MyModel/search-count-specific);
+    reuses eval's sha256/deck_hash/git_commit primitives. Records the real arch and notes there is
+    NO search axis here (policy_agent is a single forward pass, unlike eval.py's MCTS agents)."""
+    return {
+        "git_commit": git_commit(),
+        "torch_version": torch.__version__,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "engine_rng": "UNCONTROLLED (OS entropy; --seed affects agent-side sampling only)",
+        "arch": f"ActorCritic({STATE_DIM},{OPTION_DIM})",
+        "search": "none (single-forward policy; no --search-count axis)",
+        "seed": args.seed, "games_per_cell": args.games,
+        "checkpoints": [{"tag": tag, "path": p, "sha256": sha256(p)}
+                        for tag, p in nets if os.path.exists(p)],
+        "decks": {n: deck_hash(d) for n, d in model_decks.items()},
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -201,6 +222,12 @@ def main() -> int:
     print(f"PPO deck×opponent matrix | decks={deck_names} | opponents={opp_names} | modes={modes} | "
           f"{args.games} games/cell | ~{total} battles{warn} | seed={args.seed} | device={device}",
           flush=True)
+
+    # Comparability manifest (the eval_ppo analog of eval.py's run_manifest): print it so a live run
+    # is self-describing, and persist it in the JSON so two matrix results are only compared when the
+    # checkpoint bytes / code commit / deck contents match. See EVAL.md "The comparability contract".
+    manifest = build_manifest(args, nets, model_decks)
+    print(json.dumps(manifest, indent=2), flush=True)
 
     # results[tag][mode][deck][opp] = (w, l, d, p, lo, hi) — FROZEN 6-tuple (viz_ppo unpacks it
     # positionally); the win-mode telemetry lives in the PARALLEL end_stats block instead.
@@ -275,6 +302,7 @@ def main() -> int:
             json.dump({"schema": 1, "games": args.games, "seed": args.seed, "modes": modes,
                        "decks": deck_names, "opponents": opp_names,
                        "ckpts": {tag: path for tag, path in nets if tag in results},
+                       "manifest": manifest,   # additive (schema stays 1); pins ckpt bytes/commit/decks
                        "results": results, "end_stats": end_stats}, f, indent=1)
         print(f"[json] wrote {jpath}", flush=True)
     return 0

@@ -55,7 +55,7 @@ from eval import make_rulebased, make_abomasnow, make_dragapult, make_iono  # no
 from utils.run_smoketest_battle import load_deck                       # noqa: E402  (canonical deck CSV loader)
 from cg.api import to_observation_class                                # noqa: E402  (frozen opp)
 from cg.game import battle_start, battle_select, battle_finish         # noqa: E402
-from ppo_model import (PPO, STATE_DIM, OPTION_DIM, prize_potential,    # noqa: E402
+from legacy_ppo.ppo_model import (PPO, STATE_DIM, OPTION_DIM, prize_potential,    # noqa: E402
                        prize_potential_valid)
 from win_mode import classify_end                                      # noqa: E402  (terminal-obs win-mode telemetry)
 
@@ -236,9 +236,6 @@ def make_opponent(kind, ppo, device):
     raise ValueError(f"unknown opponent kind: {kind!r}")
 
 
-# ============================================================================================
-# TRAINING LOOP — concrete control flow; learning happens inside the stubbed PPO.update.
-# ============================================================================================
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(args.seed)
@@ -253,17 +250,13 @@ def train(args):
     next_opponent = make_opponent(args.opponent, ppo, device)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # Layer-1 telemetry sink (evaluation_harness_report.md §1a): one flat JSON object per update
-    # (driver fields + the full PPO.update() stats dict), truncated at run start — the same
-    # convention as the legacy nashpg trainer's {prefix}_metrics.jsonl.
     metrics_path = os.path.join(args.out_dir, f"{args.out_prefix}_metrics.jsonl")
     open(metrics_path, "w").close()
 
-    # Save the UNTRAINED net first so eval_ppo.py can anchor "did training help?" against the fresh-net
-    # baseline. That baseline is NOT ~50% vs random: a fresh net still uses the real auto_resolve
-    # heuristic on all non-policy nodes, so it starts with an edge — the success test is beating IT.
+    # Save the untrained net first. Not sure if worth it
     ppo.save(os.path.join(args.out_dir, f"{args.out_prefix}_init.pth"))
 
+    # TODO:
     print(f"PPO train | opponent={args.opponent} | decks={deck_names} | "
           f"{args.games_per_update} games/update x {args.updates} updates | device={device} | "
           f"metrics={metrics_path}", flush=True)

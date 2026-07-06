@@ -933,3 +933,115 @@ the eval stack; full audit via subagents + user-approved full prune).
   64-wide pre-arch ckpt, used ppo_endsmoke_init.pth; viz re-render on 5 standing inputs (old+new
   schemas) → figure counts IDENTICAL to pre-change reports (8/10/2/7/3); push_sweep stage
   --dry-run; zero eval_mymodel/AGENT_KIND refs left in code.
+
+2026-07-03 (later 8) — EVAL COVERAGE REVIEW + eval_ppo comparability manifest (session goal: review
+eval coverage, find blind spots, keep it simple; user-approved scope = review + the one manifest fix).
+- REVIEW (subagents audited train/eval opponent overlap + already-planned gaps): surface is mature.
+  Ranked blind spots — (1) NO held-out generalization opponent: eval_ppo matrix trains AND evals vs
+  the SAME 4 rulebased agents (default --opponent rulebased == the eval field; @eps training-only; no
+  held-out opp/deck anywhere) → zero signal separating "beats this field" from skill; planned in
+  evaluation_harness_report (held-out validation-agent) but UNBUILT; cheap fix = leave-one-out (drop 1
+  opp from training, read its existing matrix column). (2) value-head calibration + (3) puzzle suite =
+  correctly deferred (Stage 2/3). (4) eval_ppo had NO comparability manifest ← FIXED. (5) no
+  packaging-parity check (in-proc model vs main.py bundle) — real but premature. (6) minor: 16-cell
+  multiple-comparisons risk is small (disjoint-CI test already ~p<0.005/cell) + no frozen-PPO anchor
+  (largely mitigated by #4).
+- FIX: eval_ppo.build_manifest (REUSES eval.sha256/deck_hash/git_commit — no new hashing) pins each
+  matrix result to ckpt BYTES + git_commit + deck hashes + torch/device; records arch
+  ActorCritic(299,70) + search:"none" (no --search-count axis, unlike eval.py's MCTS agents). Printed
+  live AND added to the results JSON as an ADDITIVE key (schema stays 1; viz is schema-drift-tolerant).
+  +28 lines, eval_ppo.py only; matrix behavior unchanged.
+- VERIFIED: smoke eval_ppo (ppo_endsmoke_final, 1 cell × 20) → manifest prints, JSON gains "manifest",
+  its ckpt sha256 == sha256sum out; win_mode.py / ppo_model.py / --update-test pass; viz_ppo eval
+  parses the additive JSON (2 figs); eval_ppo --help intact. (out/ppo10..100 are stale 64-wide
+  pre-arch ckpts as noted earlier — used ppo_endsmoke_final.) Smoke artifacts removed. Uncommitted.
+- Plan artifact: ~/.claude/plans/recursive-shimmying-matsumoto.md (the ranked review + fix spec).
+
+2026-07-04 — PPO winrate diagnosis (session /goal: find THE simplest most significant issue capping
+winrate, every claim data-backed). Verdict: THE MAIN ISSUE = the policy does not contest the
+PRIZE/KO RACE (the primary win condition); it wins by attrition (deck/bench-out while trailing) and
+loses by being prized out ~4.4 prizes behind. Everything else (20-30% plateau, "reward starvation",
+the deck-out exploit) is downstream. Plan: ~/.claude/plans/greedy-spinning-bee.md.
+- MEASUREMENT GAP closed: the only on-disk eval of the best ckpt (eval_ppo_epsmix150_g4_s11.json) was
+  n=4 (smoke). Ran the real one — out/eval_ppo_epsmix150_diag_n200.json: full 4x4 matrix, n=200/cell,
+  ppo_epsmix150 vs ppo_epsmix_init baseline (manifest git 3d79bb8, arch ActorCritic(299,70),
+  search=none; trained ckpt sha256 93078582af76fe47 == sha256sum out — claim pinned to bytes).
+- RESULT: trained loses ALL 16 cells (<50% everywhere). Pooled matrix 121/3200=3.78% (baseline) ->
+  312/3200=9.75% (trained); max cell = lucario mirror 26.0% (CI 20.4-32.5). Training DID move 2 mirror
+  cells (disjoint CIs): lucario 13.5->26.0, abomasnow 1.0->23.5; dragapult 0.5->1.5 and iono 0.5->0.0
+  are ties (floor). So it is NOT capacity/coverage (both already ruled out) — it learns where prize-race
+  wins are reachable and nowhere else.
+- WIN/LOSS MODE (trained, pooled 16 cells via eval_ppo end_stats block, n=312 wins / 2888 losses):
+  WINS 77.2% non-prize (deck 174 / prize 71 / bench 67), 54.5% taken while TRAILING on prizes,
+  prize_diff_win_mean -0.72. LOSSES 64.3% prize-outs (prize 1856 / bench 910 / deck 122),
+  prize_diff_loss_mean -4.36 (blown out, not narrowly beaten). This reconfirms the n=800 probe at
+  eval-quality n through the standard harness.
+- THE NATURAL EXPERIMENT (headline, strengthens the causal read): abomasnow mirror is the ONE cell
+  where the trained agent wins the race — win_modes {bench 30, prize 17}, prize_diff_win_mean +2.70
+  (AHEAD when winning), trailing only 2/47 — and it is also the BIGGEST training gain (1.0->23.5%,
+  disjoint). Contrast the lucario mirror: win_modes {deck 51, prize 1}, prize_diff_win_mean -3.23,
+  trailing 49/52 (pure stall-to-deckout while behind). Same net, same objective, opposite mode
+  structure by deck => the block is prize-race competence, not the model. (abomasnow was already the
+  flagged prize-race-learnable deck, 2026-07-03.)
+- MECHANISM (INFERENCE, grounded; the critic->policy link, not raw measurement): value fn tracks own
+  board progress, not win-prob — drift_win +0.36 (V rises in wins) but drift_loss +0.05..+0.08 (V
+  RISES in losses, should fall; probe_credit label "driftL>0 = tracks own progress not win prob");
+  v_within_frac ~0.20-0.37 (V mostly a matchup lookup); holdout ev_true_pre ~0.10-0.13 vs in-sample
+  explained_var ~0.59. THEORY-REVIEW: the deeper "game-constant V => GAE gives recency-only credit,
+  no decision credit" claim is flagged in ppo_model.v_spread_stats — not independently verified.
+- Reconciles the two prior leading suspects: "reward starvation" = the CONSEQUENCE (no prize contest
+  -> ~4-prize deficit -> few wins; the epsmix curriculum only papered over it, 7/16 cells, still all
+  <50%); "deck-out exploit" = the WIN path, but winrate is capped by the LOSS path (64% prize-outs).
+- Files: out/eval_ppo_epsmix150_diag_n200.json (results+end_stats+manifest), out/eval_epsmix150_diag.log.
+  FIX is explicitly OUT OF SCOPE for this diagnostic goal (target if pursued: learning signal that
+  rewards prize-win-probability; naive --shape prizediff already failed its gate — needs its own
+  pre-registered gate).
+
+2026-07-06 — SB3 PIVOT (session /goal: viability + stub for using stable-baselines3's PPO instead of
+maintaining the hand-rolled one). VERDICT: VIABLE; the minimal stub is BUILT and verified end-to-end.
+The hand-rolled ppo_model/train_ppo/eval_ppo stack is PAUSED (untouched, still runnable, imported from).
+- Viability (3 source-level exploration passes): SB3 clone = 2.9.0, compatible with Py3.13.5/torch2.8/
+  gymnasium0.29.1 (editable install moved NO deps); the collect_games driver loop inverts cleanly into
+  gym reset()/step() (env services opponent turns + auto_resolve nodes internally); the ONE gap = core
+  SB3 PPO has no invalid-action masking + fixed-shape buffers -> Discrete(N_MAX=64) + zero-padded
+  option rows + sb3-contrib MaskablePPO (user's call: max plug-and-play over a custom per-option
+  policy; the positional Linear(latent,N_MAX) action head is the ACCEPTED, THEORY-REVIEW-flagged
+  trade-off — logit i = "option slot i", nonstationary semantics; upgrade path = custom maskable
+  per-option-scorer policy on the SAME env).
+- Built (4 files, minimal pass): sb3_env.py (CGEnv: 3-key Dict obs {state 299, options 64x70, mask};
+  seat alternation / random learner deck / make_opponent field reused from train_ppo; terminal-only
+  G∈{+1,-1,0}; battle_finish on terminal/live-reset/close/exception — singleton discipline; >N_MAX
+  policy nodes auto-resolved + counted, none observed), train_sb3.py (MaskablePPO MultiInputPolicy,
+  HP parity: gamma=1.0, lambda=0.95, clip 0.2, 4 epochs, ent 0.01, vf 0.5; n_steps counts learner
+  DECISIONS ~15-30/game), eval_sb3.py (deck×opponent matrix, eval.py play_match/wilson reuse,
+  routing = training routing via shared obs_to_gym), utils/run_smoketest_sb3_env.py (check_env +
+  masked episodes + no-singleton-leak assert).
+- Verified: check_env clean; 5 masked episodes terminate (reward∈{-1,0,1}, win_mode telemetry, 0
+  invalid actions, 0 overflows); train_sb3 --smoke = 4 updates/1024 decisions/6s, ep_len_mean 22.3
+  (matches the known 15-30 decisions/game), finite losses, zip saved+reloaded; eval_sb3 2x2@20 matrix
+  prints (floor winrates as expected from a 70-game ckpt).
+- Deps: pip install -e reference_repos/stable-baselines3 + pip install sb3-contrib (both 2.9.0,
+  training-side only, outside the submission boundary — no requirements.txt convention, per the
+  matplotlib precedent).
+- DEFERRED (documented in the plan + CLAUDE.md): SB3-free torch inference mirror (REQUIRED before any
+  Kaggle submission — MaskablePPO.load pickles gymnasium spaces, must not enter main.py), telemetry
+  parity (metrics jsonl / ev_true_pre holdout gate; hook = SB3 BaseCallback), SubprocVecEnv
+  parallelism, self/frozen opponent kinds, per-option custom policy.
+- (later) ADVERSARIAL REVIEW (3 lenses x verify, 12 agents): ZERO confirmed defects; 9 findings all
+  refuted as unreachable/behavior-neutral. But a verifier's 48-game rulebased measurement OBSERVED a
+  65-option MAIN policy node > N_MAX=64 — the plan's own "revisit if it fires" trigger — so N_MAX
+  RAISED to 128 (non-policy nodes measured <=20, bounded by the 60-card pool; MAIN scales with hand
+  size). Also applied two review-surfaced tightenings: overflow counter now gated on is_policy_select
+  (matches its documented meaning) and train_sb3 wraps learn/save in try/finally env.close(). NOTE:
+  N_MAX is baked into a checkpoint's obs space — zips trained at 64 don't load under 128 code (the
+  smoke zips were regenerated; sb3ppo100_sb3.zip retrained at 128).
+- (later) THE HAND-ROLLED STACK MOVED: ppo_model/train_ppo/eval_ppo(+plan.md -> ppo_plan.md) now live
+  in legacy_ppo/ (moved outside this session's edits, mid-session; mtimes + uncommitted mods
+  preserved). sb3_env.py adapted: legacy_ppo/ joins sys.path (bare module names kept) so the reuse
+  imports (encoders, make_opponent) keep working; full verification chain re-run green at N_MAX=128
+  (check_env + episodes + singleton + train --smoke + eval smoke). The legacy scripts themselves are
+  NOT directly runnable from the new location (repo-root-anchored paths) — acceptable while paused.
+- First 100-update SB3 signal (n=25/cell 4x4, TELEMETRY ONLY, below the n>=200 CI floor): lucario
+  mirror 36%, several 8-24% cells, iono column dead — the familiar hand-rolled-PPO shape, i.e. the
+  positional-head stack visibly learns despite the flagged trade-off. ep_rew_mean -0.95 -> -0.86
+  over 100 updates (51200 decisions, 243s local).
