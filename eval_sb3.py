@@ -27,14 +27,13 @@ _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
 
 # sb3_env owns the CG_LIB_PATH import-order discipline (it imports tcg_model first); importing
-# `eval` also inserts game_agents/rulebased/ on sys.path (idempotent).
-from sb3_env import obs_to_gym, N_MAX                                  # noqa: E402
-from tcg_model import is_policy_select, auto_resolve                   # noqa: E402
-from utils.run_smoketest_battle import load_deck                       # noqa: E402
-from cg.api import to_observation_class                                # noqa: E402
-from eval import (Agent, play_match, wilson,                           # noqa: E402
+# `eval` also inserts game_agents/rulebased/ on sys.path (idempotent). sb3_agent lives in sb3_env
+# (shared low-level home) so training can build a policy opponent without pulling in eval.py.
+from sb3_env import sb3_agent                                         # noqa: E402
+from utils.run_smoketest_battle import load_deck                      # noqa: E402
+from eval import (Agent, play_match, wilson,                          # noqa: E402
                   make_rulebased, make_abomasnow, make_dragapult, make_iono)
-from sb3_contrib import MaskablePPO                                    # noqa: E402
+from sb3_contrib import MaskablePPO                                   # noqa: E402
 
 # Opponent registry: keys match deck names so the matrix diagonal is a true mirror (eval.py names
 # the Lucario factory make_rulebased).
@@ -45,21 +44,6 @@ OPPONENTS = {
     "iono": make_iono,
 }
 DECK_NAMES = ["lucario", "abomasnow", "dragapult_ex", "iono"]
-
-
-def sb3_agent(model, greedy=False):
-    """Wrap a MaskablePPO as an agent_fn(obs_dict) -> list[int] with the training-time decision
-    routing: auto_resolve non-policy/overflow nodes, masked predict on policy nodes."""
-    def agent_fn(obs_dict):
-        o = to_observation_class(obs_dict)
-        sel = o.select
-        if not is_policy_select(sel) or len(sel.option) > N_MAX:
-            return auto_resolve(sel)
-        gobs = obs_to_gym(o)
-        action, _ = model.predict(gobs, action_masks=gobs["action_mask"].astype(bool),
-                                  deterministic=greedy)
-        return [int(action)]
-    return agent_fn
 
 
 def main() -> int:

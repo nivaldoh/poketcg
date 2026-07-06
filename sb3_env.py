@@ -73,6 +73,23 @@ def obs_to_gym(o):
             "action_mask": mask}
 
 
+def sb3_agent(model, greedy=False):
+    """Wrap a MaskablePPO (or anything with a masked `.predict`) as an agent_fn(obs_dict) ->
+    list[int] with the training-time decision routing: auto_resolve non-policy/overflow nodes,
+    masked predict on policy nodes. Shared by eval_sb3 (model seat) and self-play (opponent seat);
+    both featurize via obs_to_gym so train- and eval-time routing can't drift."""
+    def agent_fn(obs_dict):
+        o = to_observation_class(obs_dict)
+        sel = o.select
+        if not is_policy_select(sel) or len(sel.option) > N_MAX:
+            return auto_resolve(sel)
+        gobs = obs_to_gym(o)
+        action, _ = model.predict(gobs, action_masks=gobs["action_mask"].astype(bool),
+                                  deterministic=greedy)
+        return [int(action)]
+    return agent_fn
+
+
 def make_opponent(kind):
     """Return a per-game provider next_opponent() -> (opp_fn, opp_deck_or_None, opp_name) for the
     non-learner seat; opp_deck None = mirror (opponent plays the learner's deck). `kind` may be a
@@ -124,23 +141,35 @@ def make_opponent(kind):
 
 
 class CGEnv(gym.Env):
-    """One learner seat vs the rule-based opponent field, one battle per episode.
+    """One learner seat vs the opponent field, one battle per episode.
 
     `decks`: list of (name, 60-card list) pairs; the learner plays a random one per episode and
     the seat index alternates per episode (symmetry). `opponent_kind` is the `make_opponent` spec
-    (comma mix, @eps suffix); `self`/`frozen` need a live policy and are rejected here (deferred —
-    plan.md Feature 1)."""
+    (comma mix, @eps suffix), OR the bare spec `self` for self-play — the learner's own live policy
+    drives the other seat, installed after model creation via `set_policy_opponent`."""
 
     metadata = {"render_modes": []}
 
     def __init__(self, decks, opponent_kind="rulebased"):
         super().__init__()
-        for part in opponent_kind.split(","):
-            base = part.strip().partition("@")[0]
-            if base in ("self", "frozen"):
-                raise ValueError(f"opponent kind {base!r} needs a live policy — unsupported in CGEnv (deferred)")
         self._decks = list(decks)
-        self._next_opponent = make_opponent(opponent_kind)
+        self._policy_opponent_fn = None         # installed post-model via set_policy_opponent (self-play)
+        self._policy_opponent_spec = None
+        if opponent_kind.strip() == "self":
+            # Policy-backed opponent: the learner's own live policy drives the other seat. The fn is
+            # injected AFTER model creation (set_policy_opponent) — the env is built before
+            # MaskablePPO exists — so _next_opponent reads it lazily at reset() time.
+            self._policy_opponent_spec = opponent_kind.strip()
+            self._next_opponent = self._next_policy_opponent
+        else:
+            # self/frozen are only valid as the exact bare spec in v1 (make_opponent can't build
+            # them; mixing into the rule-based field or an @eps suffix is a documented follow-on).
+            for part in opponent_kind.split(","):
+                base = part.strip().partition("@")[0]
+                if base in ("self", "frozen"):
+                    raise ValueError(f"opponent kind {base!r} is only supported as the exact bare "
+                                     f"spec in v1 (no comma-mix, no @eps): got {opponent_kind!r}")
+            self._next_opponent = make_opponent(opponent_kind)
         self._episode = 0
         self._live = False          # a cg battle is live (battle_finish still owed)
         self._raw = None            # latest raw obs dict (loop control reads the dict)
@@ -156,6 +185,23 @@ class CGEnv(gym.Env):
             "action_mask": spaces.MultiBinary(N_MAX),
         })
         self.action_space = spaces.Discrete(N_MAX)
+
+    # -- self-play opponent ----------------------------------------------------------------
+    def set_policy_opponent(self, agent_fn):
+        """Install the policy that drives the opponent seat under `--opponent self`. Called once
+        after MaskablePPO is built (the env is created before the model exists); MaskablePPO wraps
+        this env by reference, so the installed fn reaches the same object model.learn() steps."""
+        self._policy_opponent_fn = agent_fn
+
+    def _next_policy_opponent(self):
+        """Per-game provider for the policy-backed opponent: the injected policy fn drives the other
+        seat, playing the learner's own deck (mirror, opp_deck=None). Read lazily so the fn can be
+        installed after the env is built."""
+        fn = self._policy_opponent_fn
+        assert fn is not None, ("self-play opponent not installed: call "
+                                "env.set_policy_opponent(sb3_agent(model)) after model creation, "
+                                "before reset()")
+        return fn, None, self._policy_opponent_spec
 
     # -- engine plumbing ------------------------------------------------------------------
     def _finish_if_live(self):

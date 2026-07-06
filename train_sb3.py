@@ -29,7 +29,7 @@ _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _REPO_ROOT)
 
 # sb3_env owns the CG_LIB_PATH import-order discipline (it imports tcg_model first).
-from sb3_env import CGEnv, N_MAX                                   # noqa: E402
+from sb3_env import CGEnv, N_MAX, sb3_agent                        # noqa: E402
 from utils.run_smoketest_battle import load_deck                   # noqa: E402
 from sb3_contrib import MaskablePPO                                # noqa: E402
 from stable_baselines3.common.callbacks import CheckpointCallback  # noqa: E402
@@ -54,6 +54,15 @@ def train(args) -> int:
         n_epochs=4, gamma=1.0, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.01, vf_coef=0.5, seed=args.seed, verbose=1,
     )
+    # Self-play: install the learner's own live policy as the opponent. The env was built before the
+    # model existed, so inject the policy fn now — MaskablePPO wraps the env by reference, so this
+    # reaches the same object model.learn() steps. model.predict always reads current weights, so
+    # the opponent tracks the learner as it updates (win-rate ~50% by construction).
+    if args.opponent.strip() == "self":
+        env.set_policy_opponent(sb3_agent(model, greedy=False))
+        assert env._policy_opponent_fn is not None
+        print("[self-play] installed policy opponent (opponent seat = current learner policy)", flush=True)
+
     # Optional intermediate checkpoints for an offline learning curve (eval each with eval_sb3.py).
     # save_freq counts env steps == learner decisions here (one non-vec env); files land at
     # out/{prefix}_ckpt_{steps}_steps.zip. Training-side only — outside the submission boundary.
@@ -98,8 +107,8 @@ def main() -> int:
                          "at out/{prefix}_ckpt_{steps}_steps.zip for an offline learning curve")
     ap.add_argument("--opponent", default="rulebased",
                     help="opponent spec (sb3_env.make_opponent): comma mix over {rulebased,random}, "
-                         "optional @eps suffix (e.g. 'rulebased,rulebased@0.25'); self/frozen "
-                         "unsupported here (deferred — plan.md Feature 1)")
+                         "optional @eps suffix (e.g. 'rulebased,rulebased@0.25'); or 'self' for live "
+                         "self-play (opponent seat = the learner's own current policy)")
     ap.add_argument("--decks", default="lucario,abomasnow,dragapult_ex,iono",
                     help="comma list of deck names in decks/<name>.csv the learner cycles through")
     ap.add_argument("--seed", type=int, default=0,
