@@ -12,6 +12,16 @@ Hyperparameters: gamma=1.0 (undiscounted terminal-only reward — THEORY-REVIEW 
 clip 0.2, 4 epochs, ent 0.01, vf 0.5, lr 3e-4. n_steps=512 with batch_size=128 keeps the 4-minibatch
 shape; SB3 counts learner DECISIONS (~15-30/game), not games, so 512 steps ≈ 20-30 games per update.
 
+Multi-select is live (all shapes): CGEnv decomposes each optional-single / fixed-k / true-variable /
+single-option node into masked single-select sub-steps (a k-pick node = k learner decisions), so
+n_steps now counts sub-steps and games-per-update drops slightly. gamma=1.0 is now LOAD-BEARING (not
+merely a flag): under undiscounted terminal-only reward every sub-step of a node shares the node's
+return-to-go — a gamma<1 would discount a k-pick node's reward unevenly across its sub-steps and
+distort intra-node credit. The obs is WIDER than pre-multi-select checkpoints (STATE_DIM_LOCAL/
+OPTION_DIM_LOCAL in sb3_env), so older out/*.zip won't load — retrain from scratch under a fresh
+--out-prefix. (Widening the learnable-node set later did NOT change the obs width, so it needs no
+further checkpoint break; only the surfaced-node distribution shifts.)
+
 Outputs (out/, gitignored): {prefix}_sb3.zip (full SB3 save — resume/eval via MaskablePPO.load)
 — training-side artifacts only, OUTSIDE the submission boundary (a deployable agent needs the
 deferred SB3-free torch mirror; see the plan).
@@ -58,6 +68,7 @@ def train(args) -> int:
     # model existed, so inject the policy fn now — MaskablePPO wraps the env by reference, so this
     # reaches the same object model.learn() steps. model.predict always reads current weights, so
     # the opponent tracks the learner as it updates (win-rate ~50% by construction).
+    # TODO: eventually add frozen checkpoints
     if args.opponent.strip() == "self":
         env.set_policy_opponent(sb3_agent(model, greedy=False))
         assert env._policy_opponent_fn is not None

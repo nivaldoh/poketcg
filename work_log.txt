@@ -262,3 +262,87 @@ deletions: git commit 4ee6421.
   --games 5 (check_env + singleton OK); train_sb3.py --smoke (save OK); eval_sb3.py on the existing
   legacy-encoder-trained sb3big checkpoint (lucario mirror ~40%, consistent with sb3_report.md — no
   featurization drift). No behavior change to the SB3 stack; existing out/*.zip checkpoints still load.
+
+2026-07-06 (later) — SELF-PLAY (--opponent self) IMPLEMENTED (plan_selfplay.md; session /goal). v1 =
+bare `self` only; `frozen` (snapshot + refresh callback) left as a documented follow-on per scope
+choice. 3 files, ~40 lines.
+- sb3_env.py: relocated sb3_agent in from eval_sb3.py (deps obs_to_gym/to_observation_class/
+  is_policy_select/auto_resolve/N_MAX all already here — pure move, no circular import). Swapped the
+  CGEnv.__init__ "needs a live policy" reject guard for detection: bare `self` -> lazy policy-opponent
+  provider (_next_policy_opponent, mirror deck, asserts if not installed); any comma-mix or @eps form
+  of self/frozen now raises a clear v1 error. Added _policy_opponent_fn + set_policy_opponent(fn).
+- eval_sb3.py: imports sb3_agent from sb3_env (deleted local copy + now-dead imports).
+- train_sb3.py: after MaskablePPO(...), install sb3_agent(model, greedy=False) via
+  env.set_policy_opponent(...) when --opponent self (env built before model; SB3 wraps by-reference +
+  first reset() is inside learn() -> timing safe). Help text updated.
+- Re-entrancy checked (plan didn't call it out): opponent's model.predict runs inside env.step during
+  rollout collection -> safe (collection already eval-mode/no_grad; predict never touches the buffer/
+  timestep counters; collection and gradient update are sequential).
+- Verified: python sb3_env.py (build); spec detection (rulebased,self / self@0.25 / self,rulebased all
+  raise; bare self constructs w/o make_opponent; reset-before-install assert fires); train_sb3.py
+  --smoke --opponent self (saves zip, prints [self-play] installed, ep_rew_mean ≈ 0 = ~50% mirror,
+  games ran); train_sb3.py --smoke rulebased (regression OK); eval_sb3.py on produced zip (full matrix
+  path via relocated sb3_agent); AST check = no unused imports. Not committed. Caveat: legacy measured
+  self-play NON-TRANSFER (crushes random, ~0-5% vs rule-based) — this makes `self` runnable/correct,
+  doesn't resolve the terminal-only-reward prize-race limiter.
+
+2026-07-07 — MULTI-SELECT PHASE A implemented (design: "plan multiselect.md"; session /goal). The SB3
+learner now sees optional-single [0..1] + fixed-k (min==max) multi-card decisions, not just
+single-select — each multi node is decomposed into masked single-select SUB-STEPS (reserved STOP slot
+127 commits the `picked` set; auto-commit at maxCount). Phase A builds ALL the machinery; Phase B
+(true-variable min<max,max>1) is a one-clause gate widening left for later. User-locked scope: Phase A
+only, census script skipped, predicate len>1, multi-pick SKILL_ORDER excluded.
+- sb3_env.py (all the work): STOP_INDEX=N_MAX-1; STATE_DIM_LOCAL=STATE_DIM+4 (303), OPTION_DIM_LOCAL=
+  OPTION_DIM+2 (72). Base sb3_features encoders FROZEN — extras appended in obs_to_gym: 2 per-option
+  bits (is_stop on row 127 / already_picked) + 4 state scalars (in_multi/num_picked/remaining_min/
+  remaining_max, all ZEROED for single-select). New is_learnable_select = strict superset of
+  is_policy_select (also excludes all-NUMBER, "must pick all" min>=len, and multi-pick SKILL_ORDER —
+  order-dependent, deferred to rules review). Shared _ms_mask(sel,picked) drives BOTH mask channels
+  (action_masks() + the obs action_mask key) so they can't disagree. CGEnv.step is now a sub-step
+  loop (append+re-present OR _commit -> battle_select); overflow cap tightened to len<=N_MAX-1 (STOP
+  reserved); invalid-action substitute now drawn FROM the live mask (can't dup an already-picked idx).
+  sb3_agent runs the SAME loop internally (no engine calls) for eval-time parity. is_policy_select
+  dropped from sb3_env imports (unused after the swap; kept in tcg_model for sb3_features' self-test).
+- utils/run_smoketest_sb3_env.py: two scripted micro-drives (always-STOP / always-pick-max) + asserts
+  ms_optional>0, ms_fixed>0, ms_empty_submit>0 (counters accumulated across drives — cg RNG unseedable,
+  assert on the union). train_sb3.py: doc-only note (checkpoint break from wider obs; gamma=1.0 now
+  LOAD-BEARING for intra-node credit, F5). eval_sb3.py: unchanged (pure sb3_agent delegation).
+- VERIFIED end-to-end (all 5 §6 checks green): smoketest --games 10 = check_env OK; multi coverage
+  optional=76 fixed=17 variable=0 EMPTY_SUBMIT=34 => battle_select([]) at minCount==0 is ACCEPTED by
+  the engine (the plan's riskiest UNVERIFIED assumption — now CONFIRMED live, 0 exceptions); singleton
+  clean. sb3_features frozen (299/70, 88 nodes). sb3_env build 303/72. train_sb3 --smoke 4 updates/
+  1024 decisions/5s, zip saved at new dims. eval_sb3 --games 20 full 16-cell matrix COMPLETES => the
+  eval driver (raises on any invalid selection) accepted every sb3_agent multi list. Floor winrates
+  (0-20%, telemetry only, <200 CI floor) as expected from a 4-update ckpt. Not committed.
+
+2026-07-07 (later) — MULTI-SELECT PHASE B implemented + Phase A reviewed (design: "plan
+multiselect.md" §4; session /goal). The learner now sees the FULL multi-select range: true-variable
+(min<max, max>1, e.g. "discard 1-3" / "attach 0-2") plus — user-opted-in beyond strict Phase B — the
+single-option [0..1] do-or-decline node (len==1). As the plan promised, ZERO new machinery: _ms_mask
+already offers intermediate STOP (minCount<=p<maxCount), obs_to_gym already emits the multi scalars for
+any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
+- Grounding census (read-only, 60 random games, reproducible): variable ~3.4/game (all SelectType.CARD,
+  maxCount<=5), single-option [0..1] ~2.7/game, ZERO all-NUMBER-multi nodes => the all-NUMBER exclusion
+  stays; the §3c len>1-vs-len>=1 open question resolved to len>=1 (surface the 161 declines).
+- sb3_env.py is_learnable_select: `n<=1` -> `n<1` (the mn>=n guard already drops the no-discretion
+  forced [1..1]); DELETED the Phase-A clause `if not (mx<=1 or mn==mx)`. Multi-pick SKILL_ORDER still
+  excluded. New ms_single_option counter (incremented in _count_shape for len==1) makes the decline
+  surfacing a VERIFIABLE result. Docstrings de-staled (module/gate/train_sb3) off the "Phase A/Phase B-
+  is-future" framing. Obs width UNCHANGED (303/72) => Phase A checkpoints still load; no new break.
+- utils/run_smoketest_sb3_env.py: added asserts ms_variable>0 + ms_single_option>0 (existing
+  always-STOP/always-max drives already exercise the variable early-stop + auto-commit paths).
+- Phase A REVIEWED: full read + a dedicated adversarial correctness pass (mask non-emptiness/STOP
+  legality, train-vs-eval committed-set equivalence, invalid-action substitution) + an 8-angle recall
+  review of the diff. NO bug in the ENV/agent path. Two env non-bugs left as-is: sb3_agent trusts the
+  masked predict where CGEnv.step re-substitutes (identical under the MaskablePPO -inf contract);
+  _MS_COUNT_NORM=8 mildly saturates counts only above maxCount 8 (census max 5). ONE test-harness
+  fragility FIXED: smoketest _choose_max (always-pick-max driver) IndexError'd if a node had
+  maxCount > len(option) (real options exhausted before the ceiling, only STOP left) — a guard the old
+  is_policy_select implied (maxCount==1) that the widened gate dropped. Census (120 games) confirms the
+  engine caps maxCount <= len(option) so it's not a live path, but _choose_max now falls back to STOP
+  defensively. (The review's 3 "ms_fixed>0 unsatisfiable" findings were false positives from an
+  incomplete census summary passed to the reviewers — actual fixed-k ≈ 3.5/game, assert passes.)
+- VERIFIED (all green): sb3_env build 303/72; smoketest --games 10 = check_env OK, coverage
+  optional=82 fixed=14 VARIABLE=25 SINGLE_OPTION=19 empty_submit=41 (0 exceptions, singleton clean);
+  train_sb3 --smoke 4 updates/1024 decisions/7s saved; eval_sb3 --games 20 full matrix COMPLETES =>
+  sb3_agent emits engine-valid lists for variable + single-option nodes. Not committed.
