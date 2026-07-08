@@ -14,7 +14,11 @@
   artwork — the same path kaggle_notebook_to_view_battles.py uses; it is no longer the only way to see
   graphics. Everything else (both boards, fog toggle, feature panels) stays local. Open this file in a
   browser and load a trace.json produced by `record_battle.py`. Steps through one recorded battle so
-  you can stand in the model's shoes at each decision.
+  you can stand in the model's shoes at each decision. A turn-labeled progress scrubber (`#scrub` /
+  renderScrub, in the sticky bar) gives a click-to-jump tick per visible step so you can reach any turn
+  (e.g. the last) in one click; Home/End jump to the ends. The "only real decisions" filter (default on;
+  `isReal`) keeps EVERY hero move — including forced switches/placements, so the board never teleports —
+  plus every discretionary (`select.learnable`) node, and hides only the opponent's forced bookkeeping.
 
   Data contract (see record_battle.py): trace = { header:{...,cards:{id:{name,hp,type,element,attacks}}},
   steps:[ {idx,turn,actor_seat,actor_name,hero_move, select:{prompt,type_name,minCount,maxCount,
@@ -41,6 +45,20 @@
   #bar button:disabled { opacity:.4; cursor:default; }
   label.tog { color:var(--dim); cursor:pointer; user-select:none; display:inline-flex; gap:5px; align-items:center; }
   #counter { font-variant-numeric:tabular-nums; min-width:150px; }
+  /* match-progress scrubber (a full-width second row inside the sticky #bar): one clickable tick per
+     VISIBLE step, grouped + labeled by turn, so you can jump anywhere (e.g. the last turn) in one click. */
+  #scrub { width:100%; display:flex; gap:3px; align-items:stretch; padding-top:4px; border-top:1px solid var(--line); }
+  #scrub:empty { display:none; }
+  .tlegend { flex:0 0 auto; align-self:flex-end; font-size:10px; color:var(--dim); white-space:nowrap; padding-bottom:1px; }
+  .tlegend b { font-style:normal; font-weight:700; }
+  .tlegend .model { color:var(--accent); } .tlegend .hero { color:#5a86bd; } .tlegend .opp { color:#7a8290; }
+  .turngrp { flex-grow:1; flex-basis:0; min-width:6px; display:flex; flex-direction:column; gap:2px; }
+  .tlabel { font-size:9px; line-height:1.1; color:var(--dim); text-align:center; white-space:nowrap; overflow:hidden; }
+  .trow { display:flex; gap:1px; height:15px; }
+  .tick { flex:1 1 0; min-width:3px; border-radius:2px; cursor:pointer; background:var(--line); }
+  .tick.opp { background:#39404e; } .tick.hero { background:#3f6187; } .tick.model { background:var(--accent); }
+  .tick:hover { filter:brightness(1.4); }
+  .tick.cur { box-shadow:0 0 0 2px var(--fg); }
   #wrap { padding:12px; display:grid; grid-template-columns:1fr; gap:12px; max-width:1100px; margin:0 auto; }
   @media (min-width:900px){ #wrap { grid-template-columns:minmax(0,1fr) minmax(340px,440px); } }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
@@ -181,10 +199,11 @@
   <button id="next">Next ▶</button>
   <label class="tog"><input type="checkbox" id="reveal"> reveal hidden info</label>
   <label class="tog"><input type="checkbox" id="gfx" checked> graphic board</label>
-  <label class="tog"><input type="checkbox" id="onlyReal" checked> only real decisions</label>
+  <label class="tog" title="Hide only the opponent's forced/bookkeeping steps. Every hero decision (even forced switches/placements) and every discretionary node stays, so the board never jumps."><input type="checkbox" id="onlyReal" checked> only real decisions</label>
   <label class="tog"><input type="checkbox" id="heroOnly"> hero (p0) moves only</label>
   <button id="graphical" disabled style="margin-left:auto"
     title="Open this game as real graphics in the Heroz visualizer — opens a new tab and sends the board data to ptcgvis.heroz.jp">🎮 Graphical replay ↗</button>
+  <div id="scrub"></div>
 </div>
 
 <div id="wrap">
@@ -223,10 +242,15 @@ function pickGame(k){ if(!SESSION) return; gameIdx=+k; TRACE=SESSION.games[gameI
   STEPS=TRACE.steps||[]; cur=0; if(!visible(cur)) cur=nextVisible(0,1); render(); }
 
 // -- stepping (respects the "only real decisions" / "hero only" filters) --
+// A step is a "real decision" if it's a HERO move (any — including forced switches/placements, so the
+// hero board never teleports) OR a discretionary node the policy is allowed to decide (select.learnable,
+// the SUPERSET of select.policy — keeps the model's multi/optional decisions like a tutor, whose probs
+// are recorded but which select.policy would wrongly drop). Opponent forced/bookkeeping steps are hidden.
+function isReal(s){ return s.hero_move || !!(s.select && s.select.learnable); }
 function visible(i){
   const s=STEPS[i]; if(!s) return false;
   if($("#heroOnly").checked && !s.hero_move) return false;
-  if($("#onlyReal").checked && !(s.select && s.select.policy)) return false;
+  if($("#onlyReal").checked && !isReal(s)) return false;
   return true;
 }
 function nextVisible(from,dir){
@@ -237,8 +261,11 @@ function nextVisible(from,dir){
 }
 $("#prev").onclick=()=>{ if(!STEPS.length) return; cur=nextVisible(cur-1,-1); render(); };
 $("#next").onclick=()=>{ if(!STEPS.length) return; cur=nextVisible(cur+1,1); render(); };
+function jumpTo(i){ if(STEPS.length){ cur=Math.max(0,Math.min(STEPS.length-1,i)); render(); } }
 document.addEventListener("keydown",e=>{
   if(e.key==="ArrowLeft"){ $("#prev").click(); } else if(e.key==="ArrowRight"){ $("#next").click(); }
+  else if(e.key==="Home"){ if(STEPS.length) jumpTo(nextVisible(0,1)); }
+  else if(e.key==="End"){ if(STEPS.length) jumpTo(nextVisible(STEPS.length-1,-1)); }
 });
 for(const id of ["reveal","onlyReal","heroOnly","gfx"]) $("#"+id).addEventListener("change",()=>{
   if(id!=="reveal" && !visible(cur)) cur=nextVisible(cur,1); render(); });
@@ -390,10 +417,14 @@ function evText(e){
 function render(){
   const wrap=$("#wrap");
   $("#graphical").disabled = !(TRACE && STEPS.length);   // enabled once a game is loaded (targets the current game)
-  if(!STEPS.length){ wrap.innerHTML=`<div id="empty">No steps in this trace.</div>`; $("#counter").textContent="— / —"; return; }
+  if(!STEPS.length){ wrap.innerHTML=`<div id="empty">No steps in this trace.</div>`; $("#counter").textContent="— / —"; $("#scrub").innerHTML=""; return; }
   const s=STEPS[cur], g=s.god&&s.god.current, sel=s.select, reveal=$("#reveal").checked;
   const h=TRACE.header, heroSeat=(h.hero_seat!=null)?h.hero_seat:0;
-  $("#counter").textContent=`step ${cur+1} / ${STEPS.length}  ·  turn ${s.turn}`;
+  // Count by VISIBLE ordinal so stepping increments 1,2,3… (no confusing "step 1 → step 5" jump);
+  // keep the raw step index too for cross-referencing the trace.
+  const visIdx=STEPS.map((_,i)=>i).filter(visible), ord=visIdx.indexOf(cur);
+  $("#counter").textContent=`${ord>=0?ord+1:"–"} / ${visIdx.length} shown · step ${cur+1}/${STEPS.length} · turn ${s.turn}`;
+  renderScrub(visIdx);
   const dtype = sel? (sel.policy?["policy","policy"]:sel.learnable?["multi","multi-select"]:["auto","auto"]) : ["auto","—"];
 
   let html = (SESSION?sessionBar():"") + `<div class="card" id="result"><div class="banner"><b>${esc(h.result_str)}</b>
@@ -417,6 +448,17 @@ function render(){
   if(sel){
     html += `<div class="prompt">${esc(sel.prompt)}</div>
       <div class="meta">${esc(sel.type_name)} · pick ${sel.minCount}${sel.maxCount!==sel.minCount?"–"+sel.maxCount:""} of ${sel.n_options}</div>`;
+    // Explain the absence of probability bars rather than leaving it a mystery:
+    //  · a non-learnable node was auto-resolved (forced single option / must-pick-all / NUMBER-count),
+    //    so the policy never ran — true for any actor;
+    //  · a learnable node with no recorded model = the actor isn't an introspectable SB3 model
+    //    (rule-based / random / legacy MCTS), so no per-option probs exist.
+    if(sel.learnable===false){
+      const n=s.options.length;
+      html += `<div class="meta" style="color:var(--warn);margin-top:3px">⚙ forced / auto-resolved — model not consulted (${n} legal option${n!==1?"s":""})</div>`;
+    } else if(!s.model){
+      html += `<div class="meta" style="margin-top:3px">no per-option probabilities — ${esc(s.actor_name)} isn't an introspectable SB3 model</div>`;
+    }
     const m=s.model; // Phase 3: {probs:[...], p_commit, value, win_prob}
     html += `<div class="opts">` + s.options.map((o,i)=>{
       const p = m&&m.probs&&m.probs[i]!=null ? m.probs[i] : null;
@@ -479,6 +521,33 @@ function featPanel(vals,labels){
     const nz=groups[grp].filter(r=>r[1]!==0).length;
     const rows=groups[grp].map(([d,v])=>`<div class="frow ${v!==0?"nz":""}"><span>${esc(d)}</span><span>${v!==0?`<b>${v}</b>`:v}</span></div>`).join("");
     return `<details class="fgroup"><summary>${esc(title[grp]||grp)} — ${nz}/${groups[grp].length} nonzero</summary>${rows}</details>`;
+  }).join("");
+}
+
+// Match-progress scrubber: one clickable tick per visible step (from `visIdx`, the raw indices that
+// pass the current filters), grouped and labeled by turn. Tick color = who + whether the model ran:
+// bright accent = hero decision the policy scored, blue = hero forced/auto move, grey = opponent. The
+// current step is outlined. Each group's flex-grow = its tick count, so all ticks are equal width and a
+// click near the right edge lands on the last turn. Lives in the sticky #bar, so it's always in reach.
+function renderScrub(visIdx){
+  const scrub=$("#scrub"); if(!scrub) return;
+  if(!visIdx || !visIdx.length){ scrub.innerHTML=""; return; }
+  const groups=[];                                   // consecutive visible steps sharing a turn
+  for(const i of visIdx){
+    const t=STEPS[i].turn, g=groups[groups.length-1];
+    if(g && g.turn===t) g.items.push(i); else groups.push({turn:t, items:[i]});
+  }
+  const legend=`<div class="tlegend" title="tick color = actor + whether the model was consulted">`
+    + `<b class="model">▮</b>model <b class="hero">▮</b>hero <b class="opp">▮</b>opp</div>`;
+  scrub.innerHTML = legend + groups.map(g=>{
+    const ticks=g.items.map(i=>{
+      const s=STEPS[i], sel=s.select||{}, who=s.hero_move?"HERO":"opp";
+      const cls=s.hero_move?(s.model?"model":"hero"):"opp";
+      const tip=`turn ${s.turn} · ${who} · ${esc(sel.prompt||"—")}`;
+      return `<div class="tick ${cls}${i===cur?" cur":""}" title="${tip}" onclick="jumpTo(${i})"></div>`;
+    }).join("");
+    return `<div class="turngrp" style="flex-grow:${g.items.length}" title="turn ${g.turn}">`
+      + `<div class="tlabel">T${g.turn}</div><div class="trow">${ticks}</div></div>`;
   }).join("");
 }
 </script>

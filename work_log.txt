@@ -393,3 +393,23 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   independent eval.play_match. Observed signal: rulebased51k_sb3 reads ~every position vs iono as losing
   (value≈-0.9) and goes 0/4 — matches the standing "checkpoints lose to rule-based" finding. All 5 plan
   phases done; win_mode.py selftest still green (imports only, no upstream edits).
+
+2026-07-07 (later) — Fixed the visualizer's replay skips + added a click-to-jump progress bar (plan:
+  ~/.claude/plans/vast-crunching-lark.md). ONE file changed (visualizer.html, +73 lines); record_battle.py
+  untouched — the trace already held everything. BUG: the default "only real decisions" filter keyed off
+  select.policy (is_policy_select: narrow 1-of-N), which (a) hid the hero's forced setup/switch moves
+  (e.g. placing Lunatone Active) so the board teleported (looked like "step 1 → step 5"), and (b) hid
+  learnable-but-not-policy hero nodes that the SB3 policy DID score — e.g. a 16-option tutor — so their
+  recorded per-option probs never showed. FIX: visibility predicate is now isReal(s) = hero_move ||
+  select.learnable (the superset the model actually runs on) — keeps every hero decision (no teleport)
+  + every discretionary node, hides only the opponent's forced bookkeeping. Also: counter shows the
+  VISIBLE ordinal ("N / 92 shown · step X/105") so it increments 1,2,3 with no gap; forced/auto nodes
+  get a "model not consulted (N legal options)" note and non-SB3 actors get a distinct "isn't an
+  introspectable SB3 model" note (so a rule-based hero's real choices aren't mislabeled forced); NEW
+  turn-labeled scrubber (#scrub/renderScrub in the sticky bar) = one clickable tick per visible step,
+  color-coded (accent=hero model / blue=hero forced / grey=opp), current outlined, + Home/End keys to
+  reach first/last in one click. Reuses existing visible()/nextVisible()/$/esc/CSS vars; no libs, no
+  network. VERIFIED (no browser → node vm+DOM-stub harness drives the real load/render/jumpTo/visible):
+  SB3 trace 20/20 (teleport gone: visible = [0,2,4…]; idx8 probability bars render; End→step 105/105);
+  rule-based no-model trace (0 forced-note mislabels, 0 phantom bars, correct notes); 2-game session
+  (game picker + per-game scrubber rebuild). Left CLAUDE.md's visualizer bullet unedited (offered).
