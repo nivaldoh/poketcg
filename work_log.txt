@@ -413,3 +413,35 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   SB3 trace 20/20 (teleport gone: visible = [0,2,4…]; idx8 probability bars render; End→step 105/105);
   rule-based no-model trace (0 forced-note mislabels, 0 phantom bars, correct notes); 2-game session
   (game picker + per-game scrubber rebuild). Left CLAUDE.md's visualizer bullet unedited (offered).
+
+2026-07-07 (later 2) — Full-card hover tooltip for the visualizer (plan:
+  ~/.claude/plans/hazy-launching-nygaard.md). TWO files. record_battle.py: _card_meta now captures the
+  rest of CardData (was name/hp/type/element/attacks only) — skills (Pokémon abilities AND trainer
+  Item/Supporter/Stadium/Tool rules text), weakness/resistance/retreat, subtype (Basic/Stage/Mega ex/
+  Tera/ACE SPEC via new _subtype), evolvesFrom, + per-attack cost (a.energies); new _attack_meta. Keys
+  emitted CONDITIONALLY (weakness/resistance/retreat/evolvesFrom Pokémon-gated) so JSON stays lean and
+  the viewer guards on presence. visualizer.html: ONE reusable #tip node + cardTip(cid,live) + a single
+  mousemove listener driven by data-cid/data-serial on every board card (gMon/gCard/mon/hand). Shows
+  static (type·subtype, weak/resist/retreat pips, abilities/rules text, attack cost+dmg+text) PLUS, for
+  a Pokémon in play, its LIVE instance (current hp+dmg, attached energy pips, tools, evo stack) via a
+  serial→mon LIVE map rebuilt each render(). Element pip gated to Pokémon+energy (trainers default to
+  colorless — was showing a stray pip). CLEANUP: dropped the 4 now-redundant name/attack title= bubbles
+  (rich tip supersedes; attack text moved off the per-atk native title); tipKey reset in render() so a
+  stationary cursor re-reads new-step data (no stale live values). VERIFIED (no browser → node --check +
+  DOM-stub harness on real data): fresh trace lands the fields w/ correct gating (energy-has-weakness
+  False); cardTip renders Mega Lucario ex w/ full live block, a Supporter w/ rules text + no element
+  pip, a Basic Energy, AND the OLD committed trace degrades to name/hp/attacks with no throw.
+
+2026-07-08 — Kaggle match-data retrieval. NEW fetch_kaggle_replays.py: bulk-downloads
+  episode replays from the live competition (pokemon-tcg-ai-battle) for BC/IL/RL. Walks the
+  Kaggle sim-competition CLI chain leaderboard -> team-submissions <teamId> -> episodes
+  <submissionId> -> replay <episodeId>, saving out/kaggle_replays/episode-<id>-replay.json
+  (dedup-by-filename; skips existing). Flags: --teams N / --team ID / --episodes K / --out.
+  Each replay = a kaggle_environments "cabt" episode: rewards [win,loss], info.TeamNames,
+  steps[i][seat] with the same fog observation our agents consume (current/logs/select/step)
+  + chosen action (option indices) + full-board visualize dump. Episodes regenerate every
+  ~4min so re-running daily accretes fresh top-of-leaderboard matches. ~4-6MB/replay (out/
+  gitignored). VERIFIED end-to-end: pulled real replays (rewards [1,-1], TeamNames present,
+  step1 action = 60-card deck per contract). NOTE: configuration.seed exists at the
+  kaggle_environments wrapper level (not necessarily the cg engine's internal RNG) — flagged,
+  not yet investigated vs the "cg RNG unseedable" finding.

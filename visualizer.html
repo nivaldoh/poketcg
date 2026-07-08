@@ -4,9 +4,13 @@
   Renders the battle board as stylized cards drawn ENTIRELY from local trace data — the "graphic
   board" toggle (on by default; gMon/gCard/gStack/gHand/gSide/gBoard below) lays out both sides'
   Active + bench, the shared stadium, zone-count stacks, and the hero's hand, with HP bars, attached-
-  energy pips, per-Pokémon attacks (name + damage, effect text on the Active / on hover), damage,
+  energy pips, per-Pokémon attacks (name + damage, effect text on the Active), damage,
   status, evo/tool/new badges, element-colored cards (by header.cards[id].element), and a face-up
-  discard top card. With the graphic board on, `#wrap` gets the `boardfocus` class → a wider two-column
+  discard top card. Hovering ANY card (either board, or the hero's hand) shows a full-card tooltip
+  (`cardTip`): static data from header.cards — type/subtype, weakness/resistance/retreat, abilities or
+  trainer rules text, and every attack's cost/damage/text — plus, for a Pokémon in play, its live
+  instance (current HP + damage, attached energy, tools, evolution stack). With the graphic board on,
+  `#wrap` gets the `boardfocus` class → a wider two-column
   layout (large board on the left, decision + obs panels in the rail beside it). No card art and NO
   network are needed for it. A "graphic board" checkbox flips back to the compact text board (side()/
   mon()). The one remaining EXTERNAL, opt-in action is the "🎮 Graphical replay" button, which POSTs
@@ -20,7 +24,8 @@
   `isReal`) keeps EVERY hero move — including forced switches/placements, so the board never teleports —
   plus every discretionary (`select.learnable`) node, and hides only the opponent's forced bookkeeping.
 
-  Data contract (see record_battle.py): trace = { header:{...,cards:{id:{name,hp,type,element,attacks}}},
+  Data contract (see record_battle.py): trace = { header:{...,cards:{id:{name,hp,type,element,
+  attacks:[{name,damage,text,cost?}], skills?,weakness?,resistance?,retreat?,subtype?,evolvesFrom?}}},
   steps:[ {idx,turn,actor_seat,actor_name,hero_move, select:{prompt,type_name,minCount,maxCount,
   policy,learnable,...}, options:[{label,chosen}], action:[i...], logs:[{kind,...}], model:null|{...},
   features:{state:[...]}, obs:{...fog...}, god:{...full board...} } ], final_god:{...} }.
@@ -157,6 +162,22 @@
   #wrap.boardfocus .gstack .back { width:40px; height:56px; }
   #wrap.boardfocus .gstack .gcard { width:78px; flex-basis:auto; }   /* keep natural height (column ctx) */
   #wrap.boardfocus .gstadium .gcard { flex-basis:108px; }
+  /* full-card hover tooltip: one reusable floating node, built from header.cards[id] (+ the live god
+     Pokémon when hovering one in play). pointer-events:none so it never becomes the hover target. */
+  #tip { position:fixed; z-index:100; pointer-events:none; display:none; max-width:300px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+    font-size:12px; line-height:1.4; color:var(--fg); box-shadow:0 6px 22px rgba(0,0,0,.55); }
+  #tip .tnm { font-weight:700; font-size:13px; display:flex; gap:8px; align-items:baseline; justify-content:space-between; }
+  #tip .tnm span:last-child { color:var(--dim); font-weight:600; white-space:nowrap; }
+  #tip .tmeta { color:var(--dim); font-size:11px; margin:2px 0 3px; display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+  #tip .trow { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:2px 0; }
+  #tip .tlbl { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+  #tip .tsec { border-top:1px solid var(--line); margin-top:6px; padding-top:5px; }
+  #tip .en { margin:0; }                              /* neutralize energies() top margin inside a row */
+  #tip .tsk b, #tip .tatk .an { font-weight:600; }
+  #tip .tsk .tx, #tip .tatk .tx { color:var(--dim); font-size:11px; }
+  #tip .tatk .ad { color:var(--accent); font-weight:700; margin-left:auto; }
+  #tip .tdm { color:var(--bad); font-weight:700; }
   /* decision */
   .prompt { font-size:15px; font-weight:600; margin-bottom:2px; }
   .opts { display:flex; flex-direction:column; gap:5px; margin-top:8px; }
@@ -220,7 +241,16 @@ const CAT = { // CardType category -> card color (Pokémon element type isn't in
   POKEMON:"#6f8fb0", ITEM:"#3fa9a0", SUPPORTER:"#e0894a", STADIUM:"#5aa06a", TOOL:"#9a6ac0",
   BASIC_ENERGY:"#c9b458", SPECIAL_ENERGY:"#b58a4a" };
 const catColor = t => CAT[t] || "#7a8290";
+// A card's board color: element color for a Pokémon (as gMon's stripe — trainers/energy also carry
+// an element field, so gate on type), else its CardType-category color (as gCard). null when the id
+// is absent (options with no card, e.g. End/Yes/No/Number).
+const cardColor = cid => {
+  if(cid==null) return null;
+  const cd=TRACE.header.cards[String(cid)]||{};
+  return (cd.type==="POKEMON"&&cd.element!=null&&EN[cd.element])?EN[cd.element][1]:catColor(cd.type||"");
+};
 let TRACE=null, STEPS=[], cur=0, SESSION=null, gameIdx=0;
+let LIVE={}, tipKey=null;   // LIVE = serial -> live god Pokémon (rebuilt each render); tipKey dedups tip rebuilds
 
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -291,14 +321,67 @@ function hpBar(hp,max){ const f=max?Math.max(0,hp/max):0; const c=f>.5?"#57c07a"
 function energies(list){ if(!list||!list.length) return "";
   return `<div class="en">`+list.map(e=>{const[l,c]=EN[e]||["?","#888"];
     return `<b style="background:${c}">${l}</b>`;}).join("")+`</div>`; }
+
+// -- full-card hover tooltip (one node, driven by data-cid / data-serial on any board card) --
+// Builds full-card HTML from header.cards[cid] plus the optional live god Pokémon (attached energy,
+// damage, evolution stack). EVERY section guards on field presence, so OLD traces — which lack the
+// enriched keys (skills/weakness/subtype/…, some even lack `element`) — degrade to name/hp/attacks.
+const tip=document.createElement("div"); tip.id="tip"; document.body.appendChild(tip);
+function cardTip(cid, live){
+  const cd=TRACE.header.cards[String(cid)]||{}, cat=(cd.type||"card").replace("_"," ").toLowerCase();
+  let h=`<div class="tnm"><span>${esc(cd.name||nameOf(cid))}</span>${cd.hp?`<span>${cd.hp} HP</span>`:""}</div>`;
+  // element pip only where an energy type is meaningful (Pokémon + energy cards; trainers default to colorless)
+  const elPip=(cd.element!=null&&(cd.type==="POKEMON"||(cd.type||"").endsWith("ENERGY")))?energies([cd.element]):"";
+  h+=`<div class="tmeta">${esc(cat)}${cd.subtype?" · "+esc(cd.subtype):""}${elPip}</div>`;
+  if(cd.weakness!=null||cd.resistance!=null||cd.retreat!=null){
+    let d="";
+    if(cd.weakness!=null)   d+=`<span class="tlbl">weak</span>${energies([cd.weakness])}`;
+    if(cd.resistance!=null) d+=`<span class="tlbl">resist</span>${energies([cd.resistance])}`;
+    if(cd.retreat!=null)    d+=`<span class="tlbl">retreat</span><span>${cd.retreat}</span>`;
+    h+=`<div class="trow">${d}</div>`;
+  }
+  const names=l=>esc((l||[]).map(t=>t.name||nameOf(t.id)).join(", "));
+  if(live){
+    const dmg=(live.maxHp||0)-(live.hp||0);
+    h+=`<div class="tsec"><div class="trow"><span class="tlbl">in play</span>`
+      + `<span>${live.hp}/${live.maxHp}${dmg>0?` <span class="tdm">−${dmg}</span>`:""}</span>`
+      + `${live.appearThisTurn?`<span class="tlbl">new</span>`:""}</div>`;
+    if(live.energies&&live.energies.length) h+=`<div class="trow"><span class="tlbl">energy</span>${energies(live.energies)}</div>`;
+    if(live.tools&&live.tools.length)       h+=`<div class="trow"><span class="tlbl">tool</span><span>${names(live.tools)}</span></div>`;
+    if(live.preEvolution&&live.preEvolution.length) h+=`<div class="trow"><span class="tlbl">evolved from</span><span>${names(live.preEvolution)}</span></div>`;
+    h+=`</div>`;
+  } else if(cd.evolvesFrom){
+    h+=`<div class="trow"><span class="tlbl">evolves from</span><span>${esc(cd.evolvesFrom)}</span></div>`;
+  }
+  if(cd.skills&&cd.skills.length) h+=`<div class="tsec">`+cd.skills.map(s=>
+      `<div class="tsk"><b>${esc(s.name)}</b>${s.text?` <span class="tx">${esc(s.text)}</span>`:""}</div>`).join("")+`</div>`;
+  if(cd.attacks&&cd.attacks.length) h+=`<div class="tsec">`+cd.attacks.map(a=>
+      `<div class="tatk"><div class="trow">${a.cost?energies(a.cost):""}<span class="an">${esc(a.name)}</span>`
+      + `${a.damage?`<span class="ad">${esc(String(a.damage))}</span>`:""}</div>`
+      + `${a.text?`<div class="tx">${esc(a.text)}</div>`:""}</div>`).join("")+`</div>`;
+  return h;
+}
+document.addEventListener("mousemove", e=>{
+  if(!TRACE){ tip.style.display="none"; return; }
+  const el=e.target.closest&&e.target.closest("[data-cid]");
+  if(!el){ tip.style.display="none"; tipKey=null; return; }
+  const cid=el.dataset.cid, ser=el.dataset.serial, key=cid+"|"+(ser||"");
+  if(key!==tipKey){ tip.innerHTML=cardTip(+cid, ser!=null?LIVE[ser]:null); tipKey=key; tip.style.display="block"; }
+  const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;   // position near the cursor, flip at the edges
+  let x=e.clientX+pad, y=e.clientY+pad;
+  if(x+w>innerWidth)  x=e.clientX-pad-w;
+  if(y+h>innerHeight) y=e.clientY-pad-h;
+  tip.style.left=Math.max(0,x)+"px"; tip.style.top=Math.max(0,y)+"px";
+});
+
 function mon(p,active){
   if(!p) return `<div class="mon ${active?"active":""}"><div class="nm empty">${active?"(no active)":"—"}</div></div>`;
-  return `<div class="mon ${active?"active":""}"><div class="nm" title="${esc(p.name||nameOf(p.id))}">${esc(p.name||nameOf(p.id))}</div>`
+  return `<div class="mon ${active?"active":""}" data-cid="${p.id}" data-serial="${p.serial}"><div class="nm">${esc(p.name||nameOf(p.id))}</div>`
     +`${hpBar(p.hp,p.maxHp)}<div class="meta">${p.hp}/${p.maxHp}${p.appearThisTurn?" ·new":""}</div>${energies(p.energies)}</div>`; }
 function conds(ps){ const c=[]; if(ps.poisoned)c.push("psn");if(ps.burned)c.push("brn");if(ps.asleep)c.push("slp");
   if(ps.paralyzed)c.push("par");if(ps.confused)c.push("cnf"); return c.length?`<span class="cond">${c.join(" ")}</span>`:""; }
 function hand(ps,show){
-  if(show && ps.hand) return `<div class="hand">`+ps.hand.map(c=>`<span class="h">${esc(c.name||nameOf(c.id))}</span>`).join("")+`</div>`;
+  if(show && ps.hand) return `<div class="hand">`+ps.hand.map(c=>`<span class="h" data-cid="${c.id}">${esc(c.name||nameOf(c.id))}</span>`).join("")+`</div>`;
   return `<div class="hand"><span class="h hidden">${ps.handCount} card(s) in hand</span></div>`;
 }
 function side(g,seat,isHero,isTurn,reveal){
@@ -322,17 +405,17 @@ function gMon(p,isActive){
   const dmg=(p.maxHp||0)-(p.hp||0), frac=p.maxHp?p.hp/p.maxHp:0;
   const cls=p.hp<=0?"ko":frac<=0.25?"low":"";
   const el=cd.element, stripe=(el!=null&&EN[el])?EN[el][1]:CAT.POKEMON;   // color the card by its element
-  // attack rows: name + damage; the effect text is a hover tooltip everywhere and shown inline on the Active.
+  // attack rows: name + damage; the effect text is shown inline on the Active (and in the card hover).
   const atks=(cd.attacks||[]).map(a=>{
     const ad=a.damage?`<span class="ad">${esc(String(a.damage))}</span>`:"";
     const eff=(isActive&&a.text)?`<div class="aeff">${esc(a.text)}</div>`:"";
-    return `<div class="atk" title="${esc(a.text||a.name)}"><span class="an">${esc(a.name)}</span>${ad}</div>${eff}`;
+    return `<div class="atk"><span class="an">${esc(a.name)}</span>${ad}</div>${eff}`;
   }).join("");
   const badges=[];
   if(p.appearThisTurn) badges.push(`<span class="bg new">new</span>`);
   if(p.preEvolution&&p.preEvolution.length) badges.push(`<span class="bg evo">evo</span>`);
   if(p.tools&&p.tools.length) badges.push(`<span class="bg">🔧${p.tools.length>1?p.tools.length:""}</span>`);
-  return `<div class="gmon ${isActive?"active":""} ${cls}" title="${esc(p.name||nameOf(p.id))}">
+  return `<div class="gmon ${isActive?"active":""} ${cls}" data-cid="${p.id}" data-serial="${p.serial}">
     <div class="stripe" style="background:${stripe}"></div>
     <div class="nm">${esc(p.name||nameOf(p.id))}</div>
     ${hpBar(p.hp,p.maxHp)}
@@ -346,7 +429,7 @@ function gMon(p,isActive){
 function gCard(cid){
   const cd=TRACE.header.cards[String(cid)]||{}, t=cd.type||"", col=catColor(t);
   const tag=(t||"card").replace("_"," ").toLowerCase()+(t==="POKEMON"&&cd.hp?` · ${cd.hp}hp`:"");
-  return `<div class="gcard" style="border-color:${col}" title="${esc(cd.name||nameOf(cid))}">
+  return `<div class="gcard" style="border-color:${col}" data-cid="${cid}">
     <div class="cbar" style="background:${col}"></div>
     <div class="cnm">${esc(cd.name||nameOf(cid))}</div>
     <div class="ctag" style="color:${col}">${esc(tag)}</div></div>`;
@@ -420,6 +503,10 @@ function render(){
   if(!STEPS.length){ wrap.innerHTML=`<div id="empty">No steps in this trace.</div>`; $("#counter").textContent="— / —"; $("#scrub").innerHTML=""; return; }
   const s=STEPS[cur], g=s.god&&s.god.current, sel=s.select, reveal=$("#reveal").checked;
   const h=TRACE.header, heroSeat=(h.hero_seat!=null)?h.hero_seat:0;
+  // Refresh the serial -> live-Pokémon map the hover tooltip reads; reset tipKey so a stationary
+  // cursor re-reads the new step's data instead of showing the previous step's stale live values.
+  LIVE={}; tipKey=null;
+  if(g) for(const pl of g.players) for(const m of [...(pl.active||[]), ...(pl.bench||[])]) if(m) LIVE[m.serial]=m;
   // Count by VISIBLE ordinal so stepping increments 1,2,3… (no confusing "step 1 → step 5" jump);
   // keep the raw step index too for cross-referencing the trace.
   const visIdx=STEPS.map((_,i)=>i).filter(visible), ord=visIdx.indexOf(cur);
@@ -464,7 +551,11 @@ function render(){
       const p = m&&m.probs&&m.probs[i]!=null ? m.probs[i] : null;
       const bar = p!=null?`<div class="pbar" style="width:${(p*100).toFixed(0)}%"></div>`:"";
       const pct = p!=null?`<span class="pct">${(p*100).toFixed(0)}%</span>`:"";
-      return `<div class="opt ${o.chosen?"chosen":""}">${bar}<span class="lbl">${esc(o.label)}</span>${pct}
+      // color the row by the option's card (left stripe + name), matching the board; skip when absent
+      const col = cardColor(o.cid);
+      const stripe = col?`box-shadow:inset 3px 0 0 0 ${col};`:"";
+      const lblStyle = col?` style="color:${col}"`:"";
+      return `<div class="opt ${o.chosen?"chosen":""}" style="${stripe}">${bar}<span class="lbl"${lblStyle}>${esc(o.label)}</span>${pct}
         ${o.chosen?`<span class="pick">◄ chose</span>`:""}</div>`;
     }).join("") + `</div>`;
     if(m){

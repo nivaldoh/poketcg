@@ -181,6 +181,17 @@ def _label_option(o, opt, yi, seen):
     return t.name.replace("_", " ").title()
 
 
+def _option_cid(o, opt, yi):
+    """The primary card id this option references (for coloring options in the viewer by their real
+    card color), or None for options with no card subject (END/YES/NO/NUMBER/ATTACK). Reuses the same
+    _resolve_option resolution as _label_option's label."""
+    try:
+        pid, _pp, _tid, _tp, _aid = _resolve_option(o, opt, yi)
+    except Exception:
+        return None
+    return pid
+
+
 def _decode_log(lg):
     """One raw log dict -> {kind, ...non-null fields}. `kind` names the LogType; the payload
     (playerIndex/cardId/value/head/reason/…) is passed through so the viewer can format it."""
@@ -228,7 +239,8 @@ def _build_record(obs, yi, actor, action, idx, seen, model_info, hero_seat):
         "policy": is_policy_select(sel),          # single most meaningful "real choice" flag
         "learnable": is_learnable_select(sel),    # the wider set the SB3 policy is allowed to decide
     }
-    rec["options"] = [{"label": _label_option(o, opt, yi, seen), "chosen": k in chosen}
+    rec["options"] = [{"label": _label_option(o, opt, yi, seen), "chosen": k in chosen,
+                       "cid": _option_cid(o, opt, yi)}   # cid → viewer colors the option by its card color
                       for k, opt in enumerate(sel.option)]
     if model_info is not None:
         # The exact state vector the model ingested (labels are the static header.state_labels).
@@ -236,19 +248,65 @@ def _build_record(obs, yi, actor, action, idx, seen, model_info, hero_seat):
     return rec
 
 
+def _subtype(cd):
+    """Compact stage/rarity label for the card hover, e.g. 'Stage 2 · ex' / 'Basic' / 'Mega ex' /
+    'ACE SPEC'. Empty for a plain trainer/energy. (ex and megaEx are mutually exclusive in the engine
+    — megaEx cards carry ex=False — so they're an either/or.)"""
+    p = []
+    if cd.basic:
+        p.append("Basic")
+    elif cd.stage1:
+        p.append("Stage 1")
+    elif cd.stage2:
+        p.append("Stage 2")
+    if cd.megaEx:
+        p.append("Mega ex")
+    elif cd.ex:
+        p.append("ex")
+    if cd.tera:
+        p.append("Tera")
+    if cd.aceSpec:
+        p.append("ACE SPEC")
+    return " · ".join(p)
+
+
+def _attack_meta(aid):
+    a = attack_table[aid]
+    m = {"name": a.name, "damage": a.damage, "text": a.text}
+    if a.energies:
+        m["cost"] = [int(e) for e in a.energies]     # energy cost as EnergyType ints (pips in the UI)
+    return m
+
+
 def _card_meta(cid):
+    """Static card data for the trace's card map — everything the visualizer's hover tooltip renders.
+    Keys beyond name/hp/type/element/attacks are emitted only when meaningful (skills, subtype, and the
+    Pokémon-only weakness/resistance/retreat/evolvesFrom) so the JSON stays lean and the viewer guards
+    on presence. `skills` covers BOTH Pokémon abilities and Trainer (Item/Supporter/Stadium/Tool) rules."""
     cd = card_table.get(cid)
     if not cd:
         return {"name": f"#{cid}"}
-    return {
+    m = {
         "name": cd.name,
         "hp": cd.hp,
         "type": _enum_name(CardType, cd.cardType),
         "element": int(cd.energyType) if getattr(cd, "energyType", None) is not None else None,
-        "attacks": [{"name": attack_table[aid].name, "damage": attack_table[aid].damage,
-                     "text": attack_table[aid].text}
-                    for aid in cd.attacks if aid in attack_table],
+        "attacks": [_attack_meta(aid) for aid in cd.attacks if aid in attack_table],
     }
+    if cd.skills:
+        m["skills"] = [{"name": sk.name, "text": sk.text} for sk in cd.skills]
+    sub = _subtype(cd)
+    if sub:
+        m["subtype"] = sub
+    if cd.cardType == CardType.POKEMON:
+        if cd.weakness is not None:
+            m["weakness"] = int(cd.weakness)
+        if cd.resistance is not None:
+            m["resistance"] = int(cd.resistance)
+        m["retreat"] = cd.retreatCost
+        if cd.evolvesFrom:
+            m["evolvesFrom"] = cd.evolvesFrom
+    return m
 
 
 def record_match(a: Agent, b: Agent, seat_a: int = 0) -> dict:
