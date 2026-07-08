@@ -346,3 +346,50 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   optional=82 fixed=14 VARIABLE=25 SINGLE_OPTION=19 empty_submit=41 (0 exceptions, singleton clean);
   train_sb3 --smoke 4 updates/1024 decisions/7s saved; eval_sb3 --games 20 full matrix COMPLETES =>
   sb3_agent emits engine-valid lists for variable + single-option nodes. Not committed.
+
+2026-07-07 (later) — Downloaded the new `ptcg_engine` competition file (game-engine C++ SOURCE) into
+  repo root. It's a DIRECTORY not a file: 45 files under `ptcg_engine/ptcgProgram 22/` (headers,
+  Export.cpp, VS proj, README, LICENSES/) ≈1.5 MB. Fetched folder-only via a per-file `kaggle
+  competitions download -f` loop (enumerated from `... files --csv | grep ^ptcg_engine/`), each into a
+  mktemp dir then moved into the reconstructed tree — robust to zip/basename CLI ambiguity; avoids the
+  ~320 MB card-list PDFs in the full-competition zip. Proprietary (LicenseRef-PTCG-ABC-Competition-
+  Use-Only) => added `ptcg_engine/` to .gitignore alongside vendor/. New ground-truth reference for
+  engine behavior / card effects / Search API (previously only had the compiled libcg.so + cg wrapper).
+  Verified: 45 files, no stray zips, Export.cpp is real C++, git check-ignore confirms exclusion.
+
+2026-07-07 (later) — Assessed whether `ptcg_engine` helps us => wrote `ptcg_engine_report.md` (plain-
+  language). KEY: it's the C++ SOURCE of OUR OWN engine (Export.cpp declares the same C ABI the cg
+  wrapper drives; ~1268 cards fully implemented in CardImpl.h). RULES: local train/eval = the license's
+  intended "build & test your entry" use; only don't republish (already .gitignored) or ship it in the
+  submission (stays stock cg). UNLOCKS (verified from source, 2 read-only sweeps): (1) ground truth to
+  kill guesswork — hardcoded card/attack IDs in game_agents/rulebased/*, sb3_features magic normalizers,
+  the ex/megaEx inconsistency, docs/cg-sdk.md hedges; (2) denser reward — per-step damage/KO/prize event
+  log is ALREADY in obs["logs"] every battle_select, we only read it at terminal (win_mode.classify_end)
+  => no rebuild needed to start using it [BUT: reward-structure blocker unproven, flagged for review];
+  (3) seedable local build (fixed seed + deviceRand=false) => CRN eval becomes feasible (shipped .so
+  bypasses seeded RNG); (4) the one-env-per-process singleton is a WRAPPER limit (cg/sim.py
+  Battle.battle_ptr is a class attr), not engine => parallel/vectorized envs feasible; (5) executable
+  rulebook. Buildable on Linux: g++ -std=c++20 -O2 -fPIC -shared -DNDEBUG Export.cpp -o libcg.so. All
+  numbered next steps are FUTURE work (not done this task); no train/eval/source code changed.
+
+2026-07-07 (later) — Built a local battle visualizer (plan: ~/.claude/plans/misty-coalescing-
+  metcalfe.md). Two NEW files, submission boundary untouched: `record_battle.py` (headless recorder)
+  + `visualizer.html` (self-contained, offline, no external POST — unlike the heroz.jp path in
+  kaggle_notebook_to_view_battles.py). WHY: we could only see a battle's FINAL result; no way to watch
+  the model decide (ideas.md line 21). record_battle plays one battle (or a --games N seat-swapped
+  SESSION) between two agent specs (random|rulebased|abomasnow|dragapult|iono|*.pth|*.zip) and writes
+  a per-decision trace.json: fog obs + god-view (visualize_data) + decoded obs["logs"] + human-readable
+  options (reuses sb3_features._resolve_option) + chosen action + win_mode.classify_end. For an SB3
+  .zip it also captures per-option probs + critic value via `traced_sb3_agent` (a read-only twin of
+  sb3_env.sb3_agent — same routing, adds get_distribution/predict_values on the SAME gobs/mask) and the
+  labeled 299-d state vector (STATE_LABELS mirrors encode_state, asserted == STATE_DIM). visualizer.html
+  steps through it: board (fog default, reveal-hidden toggle), decision panel w/ probability bars +
+  approx win-prob read ((value+1)/2, clamped — SB3 critic is unbounded), collapsible obs/features/events
+  toggles, "only real decisions"/"hero moves" step filters, and a session bar (win% + Wilson CI +
+  win-mode histogram via eval.wilson/win_mode.summarize_ends) with a game picker. Reuses eval/sb3/win_mode
+  verbatim; did NOT edit them. VERIFIED (no browser here → node DOM-stub harness): both paths record;
+  probs align to options & sum≈1; god reveals both hands vs fog hides opp; feature labels decode
+  (me:prize/6=1.0 etc.); session seat-swaps 0,1,0,1 and its CI == a fresh eval.wilson recompute == an
+  independent eval.play_match. Observed signal: rulebased51k_sb3 reads ~every position vs iono as losing
+  (value≈-0.9) and goes 0/4 — matches the standing "checkpoints lose to rule-based" finding. All 5 plan
+  phases done; win_mode.py selftest still green (imports only, no upstream edits).

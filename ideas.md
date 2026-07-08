@@ -16,6 +16,9 @@ Here are just some personal notes I'm scribbling. Agents should ignore this file
 - look for similar problems including in different domains to gain inspiration for different approaches. I think this is a two-player zero-sum imperfect-information game
 - use an llm to build a curriculum for rl? might need to build a trajectory parser for this, then we get a verifiable thing to fine-tune an llm with. Would this be an RL env? the LLM gets an easier job since it's not meant to win directly. It's can build easy replays to help warm up the RL
 - what if I tried to train the model with a backwards curriculum, like, take full trajectories, remove the last step from them, use them to teach the model how to win. Then once it learns that, remove the second-last step.
+- turn it into a multi-agent problem
+- use language model policy to play
+- create visualization to see inputs (obs, etc) and metrics while showing what's going on in a match
 
 from time to time have a /goal for a critic that has access to TCG rules and checks if we're making any conceptual mistakes
 

@@ -1,0 +1,484 @@
+<!--
+  Local Pokémon TCG battle visualizer — board + step navigation.
+
+  Renders the battle board as stylized cards drawn ENTIRELY from local trace data — the "graphic
+  board" toggle (on by default; gMon/gCard/gStack/gHand/gSide/gBoard below) lays out both sides'
+  Active + bench, the shared stadium, zone-count stacks, and the hero's hand, with HP bars, attached-
+  energy pips, per-Pokémon attacks (name + damage, effect text on the Active / on hover), damage,
+  status, evo/tool/new badges, element-colored cards (by header.cards[id].element), and a face-up
+  discard top card. With the graphic board on, `#wrap` gets the `boardfocus` class → a wider two-column
+  layout (large board on the left, decision + obs panels in the rail beside it). No card art and NO
+  network are needed for it. A "graphic board" checkbox flips back to the compact text board (side()/
+  mon()). The one remaining EXTERNAL, opt-in action is the "🎮 Graphical replay" button, which POSTs
+  the reconstructed visualize_data() array to the Heroz renderer (ptcgvis.heroz.jp) for the real card
+  artwork — the same path kaggle_notebook_to_view_battles.py uses; it is no longer the only way to see
+  graphics. Everything else (both boards, fog toggle, feature panels) stays local. Open this file in a
+  browser and load a trace.json produced by `record_battle.py`. Steps through one recorded battle so
+  you can stand in the model's shoes at each decision.
+
+  Data contract (see record_battle.py): trace = { header:{...,cards:{id:{name,hp,type,element,attacks}}},
+  steps:[ {idx,turn,actor_seat,actor_name,hero_move, select:{prompt,type_name,minCount,maxCount,
+  policy,learnable,...}, options:[{label,chosen}], action:[i...], logs:[{kind,...}], model:null|{...},
+  features:{state:[...]}, obs:{...fog...}, god:{...full board...} } ], final_god:{...} }.
+
+  `step.model` (per-option probs + critic value) renders as the option bars + value read below when the
+  actor is an SB3 model; `step.features.state` feeds the labeled feature panel; both are optional and the
+  UI degrades gracefully when absent (rule-based actors, or older traces without `element`).
+-->
+<style>
+  :root {
+    --bg:#14161c; --panel:#1c1f28; --panel2:#232734; --line:#333a48; --fg:#e6e9ef;
+    --dim:#98a0b0; --accent:#5aa0ff; --good:#57c07a; --bad:#e0664a; --chosen:#2d5a3a; --warn:#e6c84a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.45 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif; }
+  #bar { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line);
+    padding:8px 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #bar button { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:5px 12px; cursor:pointer; font-size:14px; }
+  #bar button:hover { border-color:var(--accent); }
+  #bar button:disabled { opacity:.4; cursor:default; }
+  label.tog { color:var(--dim); cursor:pointer; user-select:none; display:inline-flex; gap:5px; align-items:center; }
+  #counter { font-variant-numeric:tabular-nums; min-width:150px; }
+  #wrap { padding:12px; display:grid; grid-template-columns:1fr; gap:12px; max-width:1100px; margin:0 auto; }
+  @media (min-width:900px){ #wrap { grid-template-columns:minmax(0,1fr) minmax(340px,440px); } }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .card h2 { margin:0 0 8px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  #result, #session { grid-column:1/-1; }
+  #result .banner, #session .banner { font-size:15px; }
+  #session select { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:5px; padding:3px 6px; }
+  .meta { color:var(--dim); font-size:13px; }
+  .badge { display:inline-block; border-radius:5px; padding:1px 7px; font-size:11px; font-weight:600;
+    border:1px solid var(--line); }
+  .badge.policy { color:#bfe3ff; border-color:#3a6a9a; } .badge.multi { color:#ffd9a3; border-color:#9a723a; }
+  .badge.auto { color:var(--dim); }
+  /* board */
+  .side { border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:8px; background:var(--panel2); }
+  .side.hero { border-color:#3a5a7a; } .side.turn { box-shadow:0 0 0 2px var(--accent) inset; }
+  .side .who { font-size:12px; color:var(--dim); margin-bottom:6px; display:flex; justify-content:space-between; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; align-items:stretch; }
+  .mon { border:1px solid var(--line); border-radius:6px; padding:5px 7px; min-width:96px; background:var(--panel);
+    font-size:12px; }
+  .mon.active { border-color:var(--accent); min-width:120px; }
+  .mon .nm { font-weight:600; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+  .mon .empty { color:var(--dim); }
+  .hpbar { height:5px; border-radius:3px; background:#3a2020; overflow:hidden; margin:3px 0; }
+  .hpbar > i { display:block; height:100%; }
+  .en { display:inline-flex; gap:2px; flex-wrap:wrap; margin-top:2px; }
+  .en b { width:14px; height:14px; border-radius:50%; font-size:9px; font-weight:700; color:#111;
+    display:inline-flex; align-items:center; justify-content:center; }
+  .counts { margin-top:6px; font-size:12px; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; }
+  .counts b { color:var(--fg); font-weight:600; }
+  .cond { color:var(--warn); }
+  .hand { margin-top:6px; display:flex; gap:4px; flex-wrap:wrap; }
+  .hand .h { border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px; background:var(--panel); }
+  .hand .hidden { color:var(--dim); font-style:italic; }
+  /* graphical board (local, offline — stylized cards drawn from the god-view data; no card art / no network) */
+  .gboard { display:flex; flex-direction:column; gap:8px; overflow-x:hidden; }
+  .gside { border:1px solid var(--line); border-radius:8px; padding:8px; background:var(--panel2); }
+  .gside.hero { border-color:#3a5a7a; }
+  .gside.turn { box-shadow:0 0 0 2px var(--accent) inset; }
+  .gwho { font-size:12px; color:var(--dim); margin-bottom:6px; display:flex; justify-content:space-between; }
+  .gcore { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:8px; align-items:center; }
+  .gprize, .gstacks { display:flex; flex-direction:column; gap:6px; align-items:center; }
+  .gplay { display:flex; flex-direction:column; gap:6px; min-width:0; }
+  .grow { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; align-items:flex-start; }
+  .gmon { flex:0 1 104px; min-width:0; border:1px solid var(--line); border-radius:7px; background:var(--panel);
+    padding:5px 6px; font-size:11px; position:relative; overflow:hidden; }
+  .gmon.active { flex-basis:150px; border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .gmon.empty { border-style:dashed; color:var(--dim); background:transparent; display:flex; align-items:center;
+    justify-content:center; min-height:44px; }
+  .gmon.low { border-color:var(--warn); }
+  .gmon.ko { border-color:var(--bad); opacity:.55; }
+  .gmon .stripe { height:4px; border-radius:2px; margin-bottom:4px; }
+  .gmon .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
+  .gmon .nm.empty { font-weight:400; font-style:italic; }
+  .gmon .hpv { font-size:10px; color:var(--dim); margin-top:1px; }
+  .gmon .hpv .dm { color:var(--bad); font-weight:700; }
+  .gmon .atks { margin-top:4px; display:flex; flex-direction:column; gap:2px; }
+  .gmon .atk { display:flex; justify-content:space-between; gap:6px; font-size:10px; line-height:1.3; }
+  .gmon .atk .an { color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gmon .atk .ad { color:var(--accent); font-weight:700; font-variant-numeric:tabular-nums; }
+  .gmon .aeff { font-size:9.5px; color:var(--dim); line-height:1.28; margin:0 0 3px;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .gmon .badges { margin-top:4px; display:flex; gap:3px; flex-wrap:wrap; }
+  .gmon .bg { font-size:9px; font-weight:700; border-radius:3px; padding:0 4px; border:1px solid var(--line); color:var(--dim); }
+  .gmon .bg.new { color:var(--warn); border-color:#9a8a3a; }
+  .gmon .bg.evo { color:var(--good); border-color:#3a7a4a; }
+  .gcard { flex:0 1 66px; min-width:56px; border:1px solid var(--line); border-radius:6px; background:var(--panel);
+    padding:4px 5px; position:relative; overflow:hidden; }
+  .gcard .cbar { height:3px; border-radius:2px; margin-bottom:3px; background:var(--line); }
+  .gcard .cnm { font-size:10px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gcard .ctag { font-size:8px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gcard.back { min-width:34px; flex-basis:34px; height:46px; padding:0; border-color:#2f3646;
+    background:repeating-linear-gradient(45deg,#2a3040,#2a3040 4px,#232734 4px,#232734 8px); }
+  .ghandrow { margin-top:8px; }
+  .ghand { display:flex; gap:4px; flex-wrap:wrap; }
+  .gstack { display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:var(--dim); }
+  .gstack .back { width:30px; height:42px; border-radius:4px; border:1px solid var(--line);
+    background:repeating-linear-gradient(45deg,#2a3040,#2a3040 4px,#232734 4px,#232734 8px); }
+  .gstack .back.disc { background:var(--panel); }
+  .gstack .gcard { flex:0 0 auto; width:66px; }   /* discard top card: fix width (column ctx) so its name ellipsizes */
+  .gstack .scount { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .gmid { text-align:center; }
+  .gstadium { display:inline-flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:var(--dim); }
+  .gstadium.empty { border:1px dashed var(--line); border-radius:6px; padding:6px 16px; }
+  /* board-focus: with the graphic board on, WIDEN the layout and enlarge the board, keeping the
+     decision + obs panels in the right rail beside it (so they're in view, not a scroll away). */
+  #wrap.boardfocus { max-width:1500px; }
+  @media (min-width:900px){ #wrap.boardfocus { grid-template-columns:minmax(0,1fr) minmax(380px,560px); } }
+  #wrap.boardfocus .gmon { flex-basis:132px; font-size:12px; }
+  #wrap.boardfocus .gmon.active { flex-basis:210px; }
+  #wrap.boardfocus .gmon .nm { font-size:12.5px; }
+  #wrap.boardfocus .gmon .atk { font-size:11px; }
+  #wrap.boardfocus .gcard { flex-basis:80px; }
+  #wrap.boardfocus .gcard.back { flex-basis:44px; min-width:44px; height:60px; }
+  #wrap.boardfocus .gstack .back { width:40px; height:56px; }
+  #wrap.boardfocus .gstack .gcard { width:78px; flex-basis:auto; }   /* keep natural height (column ctx) */
+  #wrap.boardfocus .gstadium .gcard { flex-basis:108px; }
+  /* decision */
+  .prompt { font-size:15px; font-weight:600; margin-bottom:2px; }
+  .opts { display:flex; flex-direction:column; gap:5px; margin-top:8px; }
+  .opt { border:1px solid var(--line); border-radius:6px; padding:6px 9px; display:flex; align-items:center;
+    gap:8px; position:relative; }
+  .opt.chosen { background:var(--chosen); border-color:var(--good); }
+  .opt .lbl { flex:1; }
+  .opt .pick { font-size:11px; color:var(--good); font-weight:700; }
+  .opt .pbar { position:absolute; left:0; top:0; bottom:0; background:rgba(90,160,255,.16); border-radius:6px; z-index:0; }
+  .opt > * { position:relative; z-index:1; }
+  .opt .pct { font-variant-numeric:tabular-nums; color:var(--accent); min-width:44px; text-align:right; font-size:12px; }
+  .events { margin-top:8px; font-size:12px; color:var(--dim); }
+  .events .ev { padding:1px 0; } .events .dmg { color:var(--bad); } .events .ko { color:var(--bad); font-weight:700; }
+  .events .coin { color:var(--warn); }
+  #empty { color:var(--dim); text-align:center; padding:40px; grid-column:1/-1; }
+  .valwrap { margin-top:6px; font-size:12px; color:var(--dim); }
+  .valbar { height:8px; border-radius:4px; background:linear-gradient(90deg,#e0664a,#e6c84a,#57c07a); position:relative; }
+  .valbar > i { position:absolute; top:-2px; width:2px; height:12px; background:#fff; }
+  /* collapsible detail panels (toggles) */
+  .panels { margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+  details { border:1px solid var(--line); border-radius:6px; background:var(--panel2); }
+  details > summary { cursor:pointer; padding:6px 9px; font-size:12px; color:var(--dim); user-select:none; }
+  details > summary:hover { color:var(--fg); }
+  details[open] > summary { border-bottom:1px solid var(--line); color:var(--fg); }
+  details .body { padding:7px 9px; }
+  details details { margin:4px 0; }
+  pre.obs { margin:0; padding:8px 10px; max-height:340px; overflow:auto; font-size:11px; line-height:1.35;
+    color:#cdd6e4; white-space:pre-wrap; word-break:break-word; }
+  .fgroup > summary { font-weight:600; }
+  .frow { display:flex; justify-content:space-between; gap:10px; padding:1px 4px; font-size:11px;
+    color:var(--dim); font-variant-numeric:tabular-nums; }
+  .frow.nz { color:var(--fg); } .frow.nz b { color:var(--accent); }
+  .frow span:last-child { font-variant-numeric:tabular-nums; }
+</style>
+
+<div id="bar">
+  <input type="file" id="file" accept=".json,application/json">
+  <button id="prev">◀ Prev</button>
+  <span id="counter">— / —</span>
+  <button id="next">Next ▶</button>
+  <label class="tog"><input type="checkbox" id="reveal"> reveal hidden info</label>
+  <label class="tog"><input type="checkbox" id="gfx" checked> graphic board</label>
+  <label class="tog"><input type="checkbox" id="onlyReal" checked> only real decisions</label>
+  <label class="tog"><input type="checkbox" id="heroOnly"> hero (p0) moves only</label>
+  <button id="graphical" disabled style="margin-left:auto"
+    title="Open this game as real graphics in the Heroz visualizer — opens a new tab and sends the board data to ptcgvis.heroz.jp">🎮 Graphical replay ↗</button>
+</div>
+
+<div id="wrap">
+  <div id="empty">Load a <code>trace.json</code> (from <code>record_battle.py</code>) to begin.</div>
+</div>
+
+<script>
+"use strict";
+const EN = { // EnergyType -> {letter, color}
+  0:["C","#d9d4c8"],1:["G","#6abe6a"],2:["R","#e05a3a"],3:["W","#4aa3e0"],4:["L","#e6c84a"],
+  5:["P","#b06ac0"],6:["F","#c0803a"],7:["D","#5a5a6a"],8:["M","#9aa3b0"],9:["N","#c0a63a"],
+  10:["*","#b0b0b0"],11:["TR","#8a4a6a"] };
+const CAT = { // CardType category -> card color (Pokémon element type isn't in the data, only category)
+  POKEMON:"#6f8fb0", ITEM:"#3fa9a0", SUPPORTER:"#e0894a", STADIUM:"#5aa06a", TOOL:"#9a6ac0",
+  BASIC_ENERGY:"#c9b458", SPECIAL_ENERGY:"#b58a4a" };
+const catColor = t => CAT[t] || "#7a8290";
+let TRACE=null, STEPS=[], cur=0, SESSION=null, gameIdx=0;
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nameOf=id => (TRACE.header.cards[String(id)]||{}).name || ("#"+id);
+
+$("#file").addEventListener("change", e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{ try{ load(JSON.parse(ev.target.result)); }catch(err){ alert("Bad JSON: "+err); } };
+  r.readAsText(f);
+});
+// A file may be a single-game trace {header,steps,...} or a session {session,games:[trace...]}.
+function load(data){
+  if(data && data.games){ SESSION=data; gameIdx=0; TRACE=data.games[0]; }
+  else { SESSION=null; TRACE=data; }
+  STEPS=(TRACE&&TRACE.steps)||[]; cur=0; if(!visible(cur)) cur=nextVisible(0,1); render();
+}
+function pickGame(k){ if(!SESSION) return; gameIdx=+k; TRACE=SESSION.games[gameIdx];
+  STEPS=TRACE.steps||[]; cur=0; if(!visible(cur)) cur=nextVisible(0,1); render(); }
+
+// -- stepping (respects the "only real decisions" / "hero only" filters) --
+function visible(i){
+  const s=STEPS[i]; if(!s) return false;
+  if($("#heroOnly").checked && !s.hero_move) return false;
+  if($("#onlyReal").checked && !(s.select && s.select.policy)) return false;
+  return true;
+}
+function nextVisible(from,dir){
+  for(let i=from; i>=0 && i<STEPS.length; i+=dir) if(visible(i)) return i;
+  // nothing matches in that direction: fall back to any step so the view never goes blank
+  for(let i=from; i>=0 && i<STEPS.length; i+=dir) return i;
+  return Math.max(0,Math.min(STEPS.length-1,from));
+}
+$("#prev").onclick=()=>{ if(!STEPS.length) return; cur=nextVisible(cur-1,-1); render(); };
+$("#next").onclick=()=>{ if(!STEPS.length) return; cur=nextVisible(cur+1,1); render(); };
+document.addEventListener("keydown",e=>{
+  if(e.key==="ArrowLeft"){ $("#prev").click(); } else if(e.key==="ArrowRight"){ $("#next").click(); }
+});
+for(const id of ["reveal","onlyReal","heroOnly","gfx"]) $("#"+id).addEventListener("change",()=>{
+  if(id!=="reveal" && !visible(cur)) cur=nextVisible(cur,1); render(); });
+
+// -- graphical replay (the ONE external request; opt-in, only on click) --
+// record_battle stores each raw visualize_data() entry verbatim in step.god (terminal in final_god),
+// so we can rebuild the exact god-view array the Heroz renderer wants and POST it there in a new tab,
+// augmenting each entry with obs/action like kaggle_notebook_to_view_battles.py.
+const HEROZ_URL="https://ptcgvis.heroz.jp/Visualizer/Replay/0";
+function openGraphical(){
+  if(!TRACE) return;
+  const vis=STEPS.filter(s=>s.god).map(s=>({...s.god, obs:s.obs, action:[s.action, s.action]}));
+  if(TRACE.final_god) vis.push(TRACE.final_god);
+  const form=Object.assign(document.createElement("form"),{method:"POST",action:HEROZ_URL,target:"_blank"});
+  const inp=Object.assign(document.createElement("input"),{type:"hidden",name:"json",value:JSON.stringify(vis)});
+  form.appendChild(inp); document.body.appendChild(form); form.submit(); form.remove();
+}
+$("#graphical").onclick=openGraphical;
+
+// -- rendering --
+function hpBar(hp,max){ const f=max?Math.max(0,hp/max):0; const c=f>.5?"#57c07a":f>.25?"#e6c84a":"#e0664a";
+  return `<div class="hpbar"><i style="width:${(f*100).toFixed(0)}%;background:${c}"></i></div>`; }
+function energies(list){ if(!list||!list.length) return "";
+  return `<div class="en">`+list.map(e=>{const[l,c]=EN[e]||["?","#888"];
+    return `<b style="background:${c}">${l}</b>`;}).join("")+`</div>`; }
+function mon(p,active){
+  if(!p) return `<div class="mon ${active?"active":""}"><div class="nm empty">${active?"(no active)":"—"}</div></div>`;
+  return `<div class="mon ${active?"active":""}"><div class="nm" title="${esc(p.name||nameOf(p.id))}">${esc(p.name||nameOf(p.id))}</div>`
+    +`${hpBar(p.hp,p.maxHp)}<div class="meta">${p.hp}/${p.maxHp}${p.appearThisTurn?" ·new":""}</div>${energies(p.energies)}</div>`; }
+function conds(ps){ const c=[]; if(ps.poisoned)c.push("psn");if(ps.burned)c.push("brn");if(ps.asleep)c.push("slp");
+  if(ps.paralyzed)c.push("par");if(ps.confused)c.push("cnf"); return c.length?`<span class="cond">${c.join(" ")}</span>`:""; }
+function hand(ps,show){
+  if(show && ps.hand) return `<div class="hand">`+ps.hand.map(c=>`<span class="h">${esc(c.name||nameOf(c.id))}</span>`).join("")+`</div>`;
+  return `<div class="hand"><span class="h hidden">${ps.handCount} card(s) in hand</span></div>`;
+}
+function side(g,seat,isHero,isTurn,reveal){
+  const ps=g.players[seat];
+  const showHand = isHero || reveal;   // hero always sees its own hand; reveal shows the opponent's
+  return `<div class="side ${isHero?"hero":""} ${isTurn?"turn":""}">
+    <div class="who"><span>${isHero?"▼ HERO (p0)":"▲ OPP (p1)"} — seat ${seat}</span><span>${conds(ps)}</span></div>
+    <div class="row">${mon(ps.active&&ps.active[0],true)}${ps.bench.map(b=>mon(b,false)).join("")}</div>
+    <div class="counts"><span>hand <b>${ps.handCount}</b></span><span>deck <b>${ps.deckCount}</b></span>
+      <span>prizes <b>${ps.prize.length}</b></span><span>discard <b>${ps.discard.length}</b></span></div>
+    ${hand(ps,showHand)}
+  </div>`;
+}
+
+// -- graphical board (offline; stylized cards from the same god-view data the text board uses) --
+// One Pokémon as a card: name, HP bar + hp/maxHp + damage (= maxHp-hp), attached-energy pips,
+// attack name(s)+damage from header.cards, and evo/tool/new badges. `isActive` = the larger slot.
+function gMon(p,isActive){
+  if(!p) return `<div class="gmon ${isActive?"active":""} empty"><div class="nm empty">${isActive?"(no active)":"—"}</div></div>`;
+  const cd=TRACE.header.cards[String(p.id)]||{};
+  const dmg=(p.maxHp||0)-(p.hp||0), frac=p.maxHp?p.hp/p.maxHp:0;
+  const cls=p.hp<=0?"ko":frac<=0.25?"low":"";
+  const el=cd.element, stripe=(el!=null&&EN[el])?EN[el][1]:CAT.POKEMON;   // color the card by its element
+  // attack rows: name + damage; the effect text is a hover tooltip everywhere and shown inline on the Active.
+  const atks=(cd.attacks||[]).map(a=>{
+    const ad=a.damage?`<span class="ad">${esc(String(a.damage))}</span>`:"";
+    const eff=(isActive&&a.text)?`<div class="aeff">${esc(a.text)}</div>`:"";
+    return `<div class="atk" title="${esc(a.text||a.name)}"><span class="an">${esc(a.name)}</span>${ad}</div>${eff}`;
+  }).join("");
+  const badges=[];
+  if(p.appearThisTurn) badges.push(`<span class="bg new">new</span>`);
+  if(p.preEvolution&&p.preEvolution.length) badges.push(`<span class="bg evo">evo</span>`);
+  if(p.tools&&p.tools.length) badges.push(`<span class="bg">🔧${p.tools.length>1?p.tools.length:""}</span>`);
+  return `<div class="gmon ${isActive?"active":""} ${cls}" title="${esc(p.name||nameOf(p.id))}">
+    <div class="stripe" style="background:${stripe}"></div>
+    <div class="nm">${esc(p.name||nameOf(p.id))}</div>
+    ${hpBar(p.hp,p.maxHp)}
+    <div class="hpv">${p.hp}/${p.maxHp}${dmg>0?` <span class="dm">−${dmg}</span>`:""}</div>
+    ${energies(p.energies)}
+    ${atks?`<div class="atks">${atks}</div>`:""}
+    ${badges.length?`<div class="badges">${badges.join("")}</div>`:""}
+  </div>`;
+}
+// A trainer/energy/stadium (or hand Pokémon) as a simple card, colored by its CardType category.
+function gCard(cid){
+  const cd=TRACE.header.cards[String(cid)]||{}, t=cd.type||"", col=catColor(t);
+  const tag=(t||"card").replace("_"," ").toLowerCase()+(t==="POKEMON"&&cd.hp?` · ${cd.hp}hp`:"");
+  return `<div class="gcard" style="border-color:${col}" title="${esc(cd.name||nameOf(cid))}">
+    <div class="cbar" style="background:${col}"></div>
+    <div class="cnm">${esc(cd.name||nameOf(cid))}</div>
+    <div class="ctag" style="color:${col}">${esc(tag)}</div></div>`;
+}
+// A face-down zone: card back + count (deck / prizes). faceDown=false = a lighter (non-hidden) back.
+function gStack(label,count,faceDown){
+  return `<div class="gstack" title="${label}: ${count}"><div class="back ${faceDown?"":"disc"}"></div>
+    <div>${label}</div><div class="scount">${count}</div></div>`;
+}
+// The discard pile, showing its TOP (most-recently-discarded = last) card face-up — discards are public.
+function gDiscard(ps){
+  const n=ps.discard.length, top=n?ps.discard[n-1]:null;
+  const face=top?gCard(top.id):`<div class="back disc"></div>`;
+  return `<div class="gstack" title="discard: ${n}${top?" · top: "+esc(top.name||nameOf(top.id)):""}">${face}
+    <div>discard</div><div class="scount">${n}</div></div>`;
+}
+// Hero hand face-up; opponent hand = handCount backs unless `show` (the reveal toggle) is on.
+function gHand(ps,show){
+  if(show && ps.hand) return `<div class="ghand">`+ps.hand.map(c=>gCard(c.id)).join("")+`</div>`;
+  return `<div class="ghand">`+Array.from({length:ps.handCount||0},()=>`<div class="gcard back" title="hidden"></div>`).join("")+`</div>`;
+}
+// One player's half: status/who line, prize | play-area | deck+discard, and the hand row. Hero mirrors
+// the opponent vertically (active nearest the centre line, bench+hand outward).
+function gSide(g,seat,isHero,isTurn,reveal){
+  const ps=g.players[seat], show=isHero||reveal;
+  console.assert(ps.bench.length<=ps.benchMax, "bench over benchMax");
+  const bench=`<div class="grow">`+(ps.bench.length?ps.bench.map(b=>gMon(b,false)).join("")
+    :`<div class="gmon empty"><div class="nm empty">bench empty</div></div>`)+`</div>`;
+  const active=`<div class="grow">`+gMon(ps.active&&ps.active[0],true)+`</div>`;
+  const play=`<div class="gplay">${isHero?active+bench:bench+active}</div>`;
+  const core=`<div class="gcore"><div class="gprize">${gStack("prizes",ps.prize.length,true)}</div>${play}
+    <div class="gstacks">${gStack("deck",ps.deckCount,true)}${gDiscard(ps)}</div></div>`;
+  const who=`<div class="gwho"><span>${isHero?"▼ HERO (p0)":"▲ OPP (p1)"} — seat ${seat}</span><span>${conds(ps)}</span></div>`;
+  const handRow=`<div class="ghandrow">${gHand(ps,show)}</div>`;
+  return `<div class="gside ${isHero?"hero":""} ${isTurn?"turn":""}">${isHero?who+core+handRow:who+handRow+core}</div>`;
+}
+// Full board: opponent on top, shared stadium band centred, hero on the bottom (matches side()'s seating).
+function gBoard(g,heroSeat,actorSeat,reveal){
+  console.assert(g.players.length===2, "expected 2 players");
+  const oppSeat=1-heroSeat;
+  const stad=g.stadium&&g.stadium.length
+    ? `<div class="gstadium">${gCard(g.stadium[0].id)}<div>stadium</div></div>`
+    : `<div class="gstadium empty">no stadium</div>`;
+  return `<div class="gboard">`
+    + gSide(g,oppSeat,false,actorSeat===oppSeat,reveal)
+    + `<div class="gmid">${stad}</div>`
+    + gSide(g,heroSeat,true,actorSeat===heroSeat,reveal)
+    + `</div>`;
+}
+function evClass(e){ if(e.kind==="HP_CHANGE") return e.value<0||e.putDamageCounter?"dmg":"";
+  if(e.kind==="RESULT") return "ko"; if(e.kind==="COIN") return "coin"; return ""; }
+function evText(e){
+  switch(e.kind){
+    case "HP_CHANGE": return `HP ${e.value>0?"+":""}${e.value} on ${nameOf(e.cardId)}${e.putDamageCounter?" (counter)":""}`;
+    case "ATTACK": return `Attack by ${nameOf(e.cardId)}`;
+    case "COIN": return `Coin: ${e.head?"HEADS":"tails"}`;
+    case "DRAW": return `Draw ${nameOf(e.cardId)}`;
+    case "DRAW_REVERSE": return `Opponent draws`;
+    case "PLAY": return `Play ${nameOf(e.cardId)}`;
+    case "ATTACH": return `Attach ${nameOf(e.cardId)} → ${nameOf(e.cardIdTarget)}`;
+    case "EVOLVE": return `Evolve → ${nameOf(e.cardId)}`;
+    case "SWITCH": return `Switch Pokémon`;
+    case "TURN_START": return `— turn start (p${e.playerIndex}) —`;
+    case "RESULT": return `RESULT: winner p${e.result} (reason ${e.reason})`;
+    default: return e.kind;
+  }
+}
+function render(){
+  const wrap=$("#wrap");
+  $("#graphical").disabled = !(TRACE && STEPS.length);   // enabled once a game is loaded (targets the current game)
+  if(!STEPS.length){ wrap.innerHTML=`<div id="empty">No steps in this trace.</div>`; $("#counter").textContent="— / —"; return; }
+  const s=STEPS[cur], g=s.god&&s.god.current, sel=s.select, reveal=$("#reveal").checked;
+  const h=TRACE.header, heroSeat=(h.hero_seat!=null)?h.hero_seat:0;
+  $("#counter").textContent=`step ${cur+1} / ${STEPS.length}  ·  turn ${s.turn}`;
+  const dtype = sel? (sel.policy?["policy","policy"]:sel.learnable?["multi","multi-select"]:["auto","auto"]) : ["auto","—"];
+
+  let html = (SESSION?sessionBar():"") + `<div class="card" id="result"><div class="banner"><b>${esc(h.result_str)}</b>
+      · ended by <b>${esc(h.win_mode.mode)}</b> on turn ${h.win_mode.turns}
+      (p0 prize-diff ${h.win_mode.prize_diff>=0?"+":""}${h.win_mode.prize_diff})</div>
+      <div class="meta">p0 = ${esc(h.p0)} · p1 = ${esc(h.p1)} · ${STEPS.length} decisions · commit ${esc(h.git_commit)}</div></div>`;
+
+  // Board (hero at the bottom regardless of which seat it drew this game)
+  const gfx=$("#gfx").checked;
+  $("#wrap").classList.toggle("boardfocus", gfx);   // graphic board → full-width single-column layout
+  html += `<div class="card"><h2>Board ${gfx?"· graphic ":""}${reveal?"(hidden info revealed)":"(model's fog-of-war)"}</h2>`;
+  if(g){ const oppSeat=1-heroSeat, ts=s.actor_seat;
+    html += gfx ? gBoard(g,heroSeat,ts,reveal)
+                : side(g,oppSeat,false,ts===oppSeat,reveal) + side(g,heroSeat,true,ts===heroSeat,reveal);
+  } else html += `<div class="meta">no board snapshot</div>`;
+  html += `</div>`;
+
+  // Decision
+  html += `<div class="card"><h2>Decision <span class="badge ${dtype[0]}">${dtype[1]}</span></h2>`;
+  html += `<div class="meta">${s.actor_name} acting (seat ${s.actor_seat})${s.hero_move?" · HERO":""}</div>`;
+  if(sel){
+    html += `<div class="prompt">${esc(sel.prompt)}</div>
+      <div class="meta">${esc(sel.type_name)} · pick ${sel.minCount}${sel.maxCount!==sel.minCount?"–"+sel.maxCount:""} of ${sel.n_options}</div>`;
+    const m=s.model; // Phase 3: {probs:[...], p_commit, value, win_prob}
+    html += `<div class="opts">` + s.options.map((o,i)=>{
+      const p = m&&m.probs&&m.probs[i]!=null ? m.probs[i] : null;
+      const bar = p!=null?`<div class="pbar" style="width:${(p*100).toFixed(0)}%"></div>`:"";
+      const pct = p!=null?`<span class="pct">${(p*100).toFixed(0)}%</span>`:"";
+      return `<div class="opt ${o.chosen?"chosen":""}">${bar}<span class="lbl">${esc(o.label)}</span>${pct}
+        ${o.chosen?`<span class="pick">◄ chose</span>`:""}</div>`;
+    }).join("") + `</div>`;
+    if(m){
+      const wp=Math.round((m.win_prob!=null?m.win_prob:(m.value+1)/2)*100);
+      html += `<div class="valwrap">model value read: <b>${m.value.toFixed(2)}</b> ≈ ${wp}% win <i>(approx)</i>
+        <div class="valbar"><i style="left:${wp}%"></i></div></div>`;
+    }
+  } else html += `<div class="meta">deck-selection node</div>`;
+
+  // Collapsible detail panels (toggles keep the screen clean — expand only what you're chasing)
+  html += `<div class="panels">`;
+  if(s.logs&&s.logs.length){
+    html += `<details open><summary>Events into this decision (${s.logs.length})</summary><div class="events body">`
+      + s.logs.map(e=>`<div class="ev ${evClass(e)}">${esc(evText(e))}</div>`).join("") + `</div></details>`;
+  }
+  if(s.features&&s.features.state&&TRACE.header.state_labels){
+    html += `<details><summary>Model input features — state (${s.features.state.length} dims)</summary>`
+      + `<div class="body">${featPanel(s.features.state,TRACE.header.state_labels)}</div></details>`;
+  }
+  html += `<details><summary>Raw obs the ${esc(s.actor_name)} saw (fog-of-war)</summary>`
+    + `<pre class="obs">${esc(JSON.stringify(s.obs,null,1))}</pre></details>`;
+  html += `</div>`;
+
+  html += `</div>`;
+  wrap.innerHTML=html;
+}
+
+// Session summary bar (only when a session file is loaded): win% + CI + win-modes + a game picker.
+function sessionBar(){
+  const s=SESSION.session, es=s.end_summary;
+  const histo=o=>Object.keys(o||{}).length?Object.entries(o).map(([k,v])=>`${k} ${v}`).join(" · "):"—";
+  const opts=SESSION.games.map((gm,i)=>`<option value="${i}"${i===gameIdx?" selected":""}>#${i+1} · ${esc(gm.header.result_str)}</option>`).join("");
+  const t=es.turns_mean!=null?es.turns_mean.toFixed(1):"—";
+  return `<div class="card" id="session"><h2>Session · ${esc(s.p0)} vs ${esc(s.p1)}</h2>
+    <div class="banner">win% <b>${(s.win_pct*100).toFixed(1)}%</b>
+      <span class="meta">(95% Wilson CI ${(s.ci_lo*100).toFixed(1)}–${(s.ci_hi*100).toFixed(1)}, n=${s.decisive} decisive)</span>
+      · W/L/D <b>${s.wins}/${s.losses}/${s.draws}</b> over ${s.n} games</div>
+    <div class="meta">win-modes: ${histo(es.win_modes)} &nbsp;|&nbsp; loss-modes: ${histo(es.loss_modes)}
+      &nbsp;|&nbsp; prize-trailing wins ${es.trailing_win_n} &nbsp;|&nbsp; avg turns ${t}</div>
+    <div style="margin-top:7px">viewing game
+      <select onchange="pickGame(this.value)">${opts}</select></div>
+  </div>`;
+}
+
+// Group the labeled state vector by side (g / me / opp) into nested collapsibles; nonzero values pop.
+function featPanel(vals,labels){
+  const groups={};
+  for(let i=0;i<labels.length;i++){
+    const lb=labels[i], c=lb.indexOf(":"), grp=c<0?"":lb.slice(0,c), det=c<0?lb:lb.slice(c+1).trim();
+    (groups[grp]=groups[grp]||[]).push([det,vals[i]]);
+  }
+  const title={g:"global",me:"my side",opp:"opponent side"};
+  return Object.keys(groups).map(grp=>{
+    const nz=groups[grp].filter(r=>r[1]!==0).length;
+    const rows=groups[grp].map(([d,v])=>`<div class="frow ${v!==0?"nz":""}"><span>${esc(d)}</span><span>${v!==0?`<b>${v}</b>`:v}</span></div>`).join("");
+    return `<details class="fgroup"><summary>${esc(title[grp]||grp)} — ${nz}/${groups[grp].length} nonzero</summary>${rows}</details>`;
+  }).join("");
+}
+</script>

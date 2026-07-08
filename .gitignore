@@ -2,6 +2,9 @@
 vendor/
 deck.csv
 
+# Proprietary competition game-engine source (LicenseRef-PTCG-ABC-Competition-Use-Only)
+ptcg_engine/
+
 # Training output / checkpoints
 out/
 
