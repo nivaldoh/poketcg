@@ -18,6 +18,8 @@ Usage:
     python eval.py --games 40            # more games per matchup (tighter CIs)
     python eval.py --checkpoint out/mixed_final.pth --baseline-checkpoint out/model0.pth
     python eval.py --search-count 8      # deeper MCTS for the model agents (slower)
+    python eval.py --mode field --field-games 200   # rule-based field: rich per-pairing telemetry
+    python eval.py --mode field --smoke             # fast self-checking telemetry smoke
 """
 
 import argparse
@@ -28,6 +30,8 @@ import os
 import random
 import subprocess
 import sys
+import time
+from collections import Counter
 
 import torch
 
@@ -36,7 +40,7 @@ import torch
 import tcg_model
 from tcg_model import MyModel, mcts_agent, random_agent, sample_deck
 from cg.game import battle_start, battle_select, battle_finish
-from win_mode import classify_end
+from win_mode import classify_end, summarize_ends
 # The rule-based agents live in game_agents/rulebased/ as flat modules; add that dir to sys.path so
 # they import by bare name here AND on Kaggle (push_sweep.py stages them flat in its code dataset).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_agents", "rulebased"))
@@ -160,6 +164,194 @@ def wilson(wins: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
     center = (p + z * z / (2 * n)) / denom
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
     return (p, max(0.0, center - half), min(1.0, center + half))
+
+
+# --- rich per-matchup telemetry (--mode field) --------------------------------------------------
+# A PARALLEL collection path to play_match: same seat-swapped loop, but it also records illegal
+# actions, first/second (true coin-flip), prizes, length, and action usage. play_match / _play_one
+# stay byte-for-byte unchanged so the frozen callers (eval_sb3, record_battle, gauntlet, sprt) are
+# untouched. It reuses win_mode.classify_end + summarize_ends and wilson() — no new metric math.
+
+def _validate_selection(sel, sd):
+    """Mirror the engine's OWN select validation so an illegal action can be COUNTED and
+    CATEGORIZED, instead of collapsing into the bare IndexError battle_select raises (the engine
+    exposes no per-move errorType — that pair is deck-legality-only on battle_start's StartData).
+    Categories are exactly the engine's own codes: cg.game.Select's list[int] pre-check, then the
+    search_step validation (4=count / 5=range / 6=duplicate). This is the COMPLETE illegal space
+    because obs.select.option is pre-filtered to legal options, so any in-range, non-duplicate
+    index of an allowed count is legal. `sd` is the raw obs["select"] dict; returns None if legal,
+    else the category string."""
+    if not (isinstance(sel, list) and all(isinstance(x, int) for x in sel)):
+        return "type"                                   # cg.game.Select's list[int] pre-check
+    if not (sd["minCount"] <= len(sel) <= sd["maxCount"]):
+        return "count"                                  # search_step error 4
+    n_opt = len(sd["option"])
+    if any(not (0 <= x < n_opt) for x in sel):
+        return "range"                                  # search_step error 5
+    if len(set(sel)) != len(sel):
+        return "duplicate"                              # search_step error 6
+    return None
+
+
+def _usage_label(o, opt, yi):
+    """Compact, stable action label for the usage histogram. Reuses sb3_features._resolve_option
+    (the positional Option->card dereference) + tcg_model.card_table / sb3_features.attack_table
+    for runtime names (no hardcoded card list — all via all_card_data()). Form
+    '{OptionType}:{card-or-attack}', or the bare OptionType for card-less options (END/YES/NO/
+    NUMBER)."""
+    from sb3_features import _resolve_option, attack_table   # lazy: only field mode needs it
+    from cg.api import OptionType
+    pid, _pp, tid, _tp, aid = _resolve_option(o, opt, yi)
+    ot = OptionType(opt.type).name
+    if aid is not None:
+        atk = attack_table.get(aid)
+        return f"{ot}:{getattr(atk, 'name', None) or aid}"
+    if pid is not None:
+        c = tcg_model.card_table.get(pid)
+        return f"{ot}:{getattr(c, 'name', None) or pid}"
+    return ot
+
+
+def _play_field_one(a: Agent, b: Agent, seat_a: int, usage_a: Counter, usage_b: Counter) -> dict:
+    """One telemetry battle (see play_field_pair). Mutates usage_a/usage_b (keyed by the agent that
+    made each pick). Returns the rich a-relative per-game record. Unlike _play_one, an illegal
+    action is pre-validated and RECORDED (not crashed on) — the game is then marked error and
+    excluded from W/L/D, but its selects still count toward the illegal-action rate."""
+    from cg.api import to_observation_class                  # lazy: only field mode needs it
+    decks = [None, None]
+    decks[seat_a] = a.deck
+    decks[1 - seat_a] = b.deck
+    obs, start = battle_start(decks[0], decks[1])
+    if start.errorPlayer >= 0:
+        raise ValueError(f"deck rejected: errorType={start.errorType} player={start.errorPlayer}")
+
+    # Tallies keyed by SEAT index (0/1); mapped to a/b at the end. usage/agents route by seat too.
+    selects = [0, 0]
+    illegal = [0, 0]
+    illegal_cat = [Counter(), Counter()]
+    usage = {seat_a: usage_a, 1 - seat_a: usage_b}
+    agents = {seat_a: a, 1 - seat_a: b}
+    compute_s = 0.0
+    error_seat = error_cat = None
+
+    while obs["current"]["result"] < 0:
+        yi = obs["current"]["yourIndex"]
+        actor = agents[yi]
+        t0 = time.perf_counter()
+        chosen = actor.fn(obs)
+        compute_s += time.perf_counter() - t0
+        selects[yi] += 1
+        cat = _validate_selection(chosen, obs["select"])
+        if cat is not None:
+            illegal[yi] += 1
+            illegal_cat[yi][cat] += 1
+            error_seat, error_cat = yi, cat
+            break
+        try:                                                # usage decode must never break a battle
+            o = to_observation_class(obs)
+            for k in chosen:
+                usage[yi][_usage_label(o, o.select.option[k], yi)] += 1
+        except Exception:
+            usage[yi]["<decode_error>"] += 1
+        t1 = time.perf_counter()
+        try:
+            obs = battle_select(chosen)
+            compute_s += time.perf_counter() - t1
+        except IndexError:                                  # backstop: validator passed, engine didn't
+            compute_s += time.perf_counter() - t1
+            illegal[yi] += 1
+            illegal_cat[yi]["engine"] += 1
+            error_seat, error_cat = yi, "engine"
+            break
+        except ValueError as e:
+            if "battle_ptr" in str(e):
+                raise                                       # engine corruption, not an agent action
+            compute_s += time.perf_counter() - t1
+            illegal[yi] += 1
+            illegal_cat[yi]["engine"] += 1
+            error_seat, error_cat = yi, "engine"
+            break
+
+    battle_finish()
+
+    def _side(seat):
+        return {"selects": selects[seat], "illegal": illegal[seat],
+                "illegal_cat": dict(illegal_cat[seat])}
+
+    if error_seat is not None:
+        return {"error": True, "win": None, "seat_a": seat_a, "compute_s": compute_s,
+                "error_seat": ("a" if error_seat == seat_a else "b"), "error_cat": error_cat,
+                "a": _side(seat_a), "b": _side(1 - seat_a)}
+
+    cur = obs["current"]
+    fp = cur.get("firstPlayer", -1)
+    rec = dict(classify_end(obs, seat_a))                   # win, mode, prize_diff, *_prizes_left, turns...
+    rec.update(error=False, result=cur["result"], seat_a=seat_a,
+               went_first=(None if fp not in (0, 1) else (fp == seat_a)),
+               compute_s=compute_s, a=_side(seat_a), b=_side(1 - seat_a))
+    return rec
+
+
+def play_field_pair(a: Agent, b: Agent, n_games: int):
+    """Telemetry twin of play_match: n seat-swapped games that ALSO collect a rich per-game record
+    + per-agent action-usage Counters, WITHOUT touching play_match's frozen 3-tuple contract.
+    Returns (wins_a, losses_a, draws, records, usage_a, usage_b). Records are a-relative."""
+    wins = losses = draws = 0
+    records = []
+    usage_a, usage_b = Counter(), Counter()
+    for i in range(n_games):
+        rec = _play_field_one(a, b, i % 2, usage_a, usage_b)
+        records.append(rec)
+        if rec["error"]:
+            pass                                             # excluded from W/L/D; counts in illegal-rate
+        elif rec["win"] == 1:
+            wins += 1
+        elif rec["win"] == -1:
+            losses += 1
+        else:
+            draws += 1
+        print(f"    {a.name} vs {b.name} game {i + 1}/{n_games}: W/L/D={wins}/{losses}/{draws}",
+              end="\r", flush=True)
+    print(" " * 72, end="\r")
+    return wins, losses, draws, records, usage_a, usage_b
+
+
+def summarize_matchup(name_a, name_b, w, l, d, records, usage_a, usage_b, top_k=12) -> dict:
+    """Roll one play_field_pair result into the per-pairing telemetry block. Reuses wilson() for
+    EVERY rate and win_mode.summarize_ends for the terminal-obs end block (mode histograms /
+    prize_diff means / turns_mean). Counts (not rates) only where a proportion has no denominator."""
+    valid = [r for r in records if not r["error"]]
+    dec = w + l
+    p, lo, hi = wilson(w, dec)
+    es = summarize_ends(valid)                              # valid recs are supersets of classify_end dicts
+
+    def _split(want_first):
+        ww = sum(1 for r in valid if r["win"] == 1 and r["went_first"] is want_first)
+        ll = sum(1 for r in valid if r["win"] == -1 and r["went_first"] is want_first)
+        return (ww, ll, *wilson(ww, ww + ll))
+
+    def _illegal(side):
+        sel = sum(r[side]["selects"] for r in records)
+        ill = sum(r[side]["illegal"] for r in records)
+        cats = Counter()
+        for r in records:
+            cats.update(r[side]["illegal_cat"])
+        pr, plo, phi = wilson(ill, sel)
+        return {"selects": sel, "illegal": ill, "rate": pr, "lo": plo, "hi": phi, "by_cat": dict(cats)}
+
+    prizes = [6 - r["my_prizes_left"] for r in valid]       # a's prizes taken = 6 - a's prizes left
+    pdiffs = [r["prize_diff"] for r in valid]
+    return {
+        "a": name_a, "b": name_b, "w": w, "l": l, "d": d, "decisive": dec,
+        "win_p": p, "win_lo": lo, "win_hi": hi,
+        "error_games": sum(1 for r in records if r["error"]),
+        "first": _split(True), "second": _split(False), "end": es,
+        "prizes_taken_mean": (sum(prizes) / len(prizes)) if prizes else None,
+        "prize_diff_mean": (sum(pdiffs) / len(pdiffs)) if pdiffs else None,
+        "compute_s_mean": (sum(r["compute_s"] for r in valid) / len(valid)) if valid else None,
+        "illegal_a": _illegal("a"), "illegal_b": _illegal("b"),
+        "usage_a": usage_a.most_common(top_k), "usage_b": usage_b.most_common(top_k),
+    }
 
 
 # --- reproducibility + reliable-comparison helpers (see EVAL.md "Reliable A/B comparison") ---
@@ -504,13 +696,258 @@ def run_battery(args) -> int:
     return 0
 
 
+# --- --mode field: rule-based round-robin telemetry report --------------------------------------
+
+def _fmt_wil(p, lo, hi) -> str:
+    return f"{100 * p:5.1f}% (95% CI {100 * lo:.1f}-{100 * hi:.1f})"
+
+
+def _fold_side(g, win, went_first, mode, prizes, pdiff, turns, compute):
+    """Fold ONE agent's perspective of a single game into its pooled overall accumulator `g`."""
+    if win == 1:
+        g["w"] += 1; g["win_modes"][mode] += 1
+        if went_first is True:
+            g["first_w"] += 1
+        elif went_first is False:
+            g["second_w"] += 1
+    elif win == -1:
+        g["l"] += 1; g["loss_modes"][mode] += 1
+        if went_first is True:
+            g["first_l"] += 1
+        elif went_first is False:
+            g["second_l"] += 1
+    else:
+        g["d"] += 1
+    g["prizes"].append(prizes); g["pdiff"].append(pdiff)
+    g["turns"].append(turns); g["compute"].append(compute)
+
+
+def _accumulate_overall(agg, name_a, name_b, records):
+    """Fold a pairing's a-relative records into BOTH agents' pooled overall stats. b's view is the
+    mirror: win=-win, prizes taken = 6-opp_prizes_left, went_first = not a.went_first, mode
+    win<->loss swapped (handled by _fold_side via the flipped win sign)."""
+    for r in records:
+        agg[name_a]["selects"] += r["a"]["selects"]; agg[name_a]["illegal"] += r["a"]["illegal"]
+        agg[name_a]["illegal_cat"].update(r["a"]["illegal_cat"])
+        agg[name_b]["selects"] += r["b"]["selects"]; agg[name_b]["illegal"] += r["b"]["illegal"]
+        agg[name_b]["illegal_cat"].update(r["b"]["illegal_cat"])
+        if r["error"]:
+            agg[name_a]["errors"] += 1; agg[name_b]["errors"] += 1
+            continue
+        _fold_side(agg[name_a], r["win"], r["went_first"], r["mode"],
+                   6 - r["my_prizes_left"], r["prize_diff"], r["turns"], r["compute_s"])
+        wf_b = None if r["went_first"] is None else (not r["went_first"])
+        _fold_side(agg[name_b], -r["win"], wf_b, r["mode"],
+                   6 - r["opp_prizes_left"], -r["prize_diff"], r["turns"], r["compute_s"])
+
+
+def _new_agg():
+    return {"w": 0, "l": 0, "d": 0, "errors": 0, "first_w": 0, "first_l": 0,
+            "second_w": 0, "second_l": 0, "prizes": [], "pdiff": [], "turns": [], "compute": [],
+            "selects": 0, "illegal": 0, "illegal_cat": Counter(),
+            "win_modes": Counter(), "loss_modes": Counter()}
+
+
+def _overall_summary(names, agg, usage_tot, top_k) -> dict:
+    """JSON-friendly per-agent overall rollup (single source for both the print + the --json-out)."""
+    def _mean(xs):
+        return (sum(xs) / len(xs)) if xs else None
+    out = {}
+    for nm in names:
+        g = agg[nm]
+        dec = g["w"] + g["l"]
+        out[nm] = {
+            "w": g["w"], "l": g["l"], "d": g["d"], "errors": g["errors"], "decisive": dec,
+            "win": wilson(g["w"], dec),
+            "first": wilson(g["first_w"], g["first_w"] + g["first_l"]),
+            "first_n": g["first_w"] + g["first_l"],
+            "second": wilson(g["second_w"], g["second_w"] + g["second_l"]),
+            "second_n": g["second_w"] + g["second_l"],
+            "prizes_taken_mean": _mean(g["prizes"]), "prize_diff_mean": _mean(g["pdiff"]),
+            "turns_mean": _mean(g["turns"]), "compute_s_mean": _mean(g["compute"]),
+            "win_modes": dict(g["win_modes"]), "loss_modes": dict(g["loss_modes"]),
+            "selects": g["selects"], "illegal": g["illegal"],
+            "illegal_rate": wilson(g["illegal"], g["selects"]), "illegal_by_cat": dict(g["illegal_cat"]),
+            "usage_top": usage_tot[nm].most_common(top_k), "distinct_actions": len(usage_tot[nm]),
+        }
+    return out
+
+
+def _print_matchup(s):
+    err = f", {s['error_games']} ERROR" if s["error_games"] else ""
+    print(f"  W/L/D = {s['w']}/{s['l']}/{s['d']}   win% = {_fmt_wil(s['win_p'], s['win_lo'], s['win_hi'])}"
+          f"  (n={s['decisive']} dec, {s['d']} draws{err})")
+    fw, fl, fp, flo, fhi = s["first"]
+    sw, sl, sp, slo, shi = s["second"]
+    print(f"    going 1st: {_fmt_wil(fp, flo, fhi)} (n={fw + fl})    "
+          f"going 2nd: {_fmt_wil(sp, slo, shi)} (n={sw + sl})")
+    es = s["end"]
+    print(f"    end modes  win={dict(es['win_modes'])}  loss={dict(es['loss_modes'])}  "
+          f"trailing_wins={es['trailing_win_n']}")
+    pt, pd, tm, cm = s["prizes_taken_mean"], s["prize_diff_mean"], es["turns_mean"], s["compute_s_mean"]
+    bits = [f"prizes_taken(a)={pt:.2f}" if pt is not None else "prizes_taken(a)=n/a",
+            f"prize_diff(a)={pd:+.2f}" if pd is not None else "prize_diff(a)=n/a",
+            f"turns={tm:.1f}" if tm is not None else "turns=n/a",
+            f"{cm * 1000:.0f}ms/game" if cm is not None else "compute=n/a"]
+    print("    " + "   ".join(bits))
+    for who, nm, il in (("a", s["a"], s["illegal_a"]), ("b", s["b"], s["illegal_b"])):
+        cat = f" {il['by_cat']}" if il["by_cat"] else ""
+        print(f"    illegal[{nm}] = {il['illegal']}/{il['selects']} selects "
+              f"({_fmt_wil(il['rate'], il['lo'], il['hi'])}){cat}")
+    for nm, use in ((s["a"], s["usage_a"]), (s["b"], s["usage_b"])):
+        print(f"    top actions [{nm}]: " + (", ".join(f"{k}×{v}" for k, v in use) or "(none)"))
+
+
+def _print_matrix(names, matrix):
+    col_w = 16
+    print(f"\n{'=' * 78}")
+    print("WIN% MATRIX — row agent vs column opponent deck (decisive; '--' = self) — DECK-CONFOUNDED")
+    print("agent\\opp".ljust(14) + "".join(o[:col_w - 1].ljust(col_w) for o in names))
+    for row in names:
+        line = row.ljust(14)
+        for col in names:
+            if row == col:
+                line += "--".ljust(col_w)
+            else:
+                w, l, d, p, lo, hi = matrix[row][col]
+                line += (f"{100 * p:4.1f}({100 * lo:2.0f}-{100 * hi:2.0f})").ljust(col_w)
+        print(line)
+
+
+def _print_overall(names, overall):
+    print(f"\n{'=' * 78}")
+    print("PER-AGENT OVERALL — pooled across its pairings (DECK-CONFOUNDED aggregate):")
+    for nm in names:
+        o = overall[nm]
+        err = f", {o['errors']} err" if o["errors"] else ""
+        print(f"\n  {nm}:  win% {_fmt_wil(*o['win'])}  (n={o['decisive']} dec, {o['d']} draws{err})")
+        print(f"     1st {_fmt_wil(*o['first'])} (n={o['first_n']})    "
+              f"2nd {_fmt_wil(*o['second'])} (n={o['second_n']})")
+        pt = f"{o['prizes_taken_mean']:.2f}" if o["prizes_taken_mean"] is not None else "n/a"
+        tm = f"{o['turns_mean']:.1f}" if o["turns_mean"] is not None else "n/a"
+        print(f"     prizes_taken/game={pt}  turns={tm}  "
+              f"win_modes={o['win_modes']}  loss_modes={o['loss_modes']}")
+        cat = f" {o['illegal_by_cat']}" if o["illegal_by_cat"] else ""
+        print(f"     illegal={o['illegal']}/{o['selects']} ({_fmt_wil(*o['illegal_rate'])}){cat}")
+        top = ", ".join(f"{k}×{v}" for k, v in o["usage_top"]) or "(none)"
+        print(f"     top actions ({o['distinct_actions']} distinct): {top}")
+
+
+def _print_field_caveats():
+    print(f"\n{'-' * 78}")
+    print("Caveats:")
+    print("  * DECK-CONFOUNDED: each agent hardcodes its own deck, so every cell mixes agent skill")
+    print("    with the deck matchup — NOT a clean skill ranking (eval-discipline). No mirror here.")
+    print("  * Illegal-action rate: battle_select exposes only a bare IndexError (no errorType — that")
+    print("    is deck-legality-only, on battle_start). count/range/duplicate/type mirror the engine's")
+    print("    OWN checks (cg.game list[int] pre-check + search_step codes 4/5/6); the option list is")
+    print("    pre-filtered to legal options, so 0 illegal is expected — it doubles as a contract-honor")
+    print("    guard for the four agents. An 'engine' category would mean the backstop fired.")
+    print("  * 'going 1st/2nd' = the true coin-flip firstPlayer, not seat parity (which the harness")
+    print("    only alternates to cancel player-index bias).")
+    print("  * Wall-clock is agent-think + engine-step per game (usage-decode excluded); win% excludes draws.")
+
+
+def _field_smoke_asserts(names, summaries, matrix, overall, usage_tot):
+    assert summaries, "no pairings summarized"
+    for key, s in summaries.items():
+        for k in ("win_p", "first", "second", "end", "illegal_a", "illegal_b",
+                  "prizes_taken_mean", "compute_s_mean", "usage_a"):
+            assert k in s, f"missing {k} in summary {key}"
+        assert 0.0 <= s["win_p"] <= 1.0, s
+        for il in (s["illegal_a"], s["illegal_b"]):
+            assert il["selects"] > 0 and 0.0 <= il["rate"] <= 1.0, il
+        assert s["end"]["turns_mean"] is None or s["end"]["turns_mean"] > 0, s
+        assert s["compute_s_mean"] is None or s["compute_s_mean"] > 0, s
+    for nm in names:
+        assert overall[nm]["selects"] > 0, f"{nm} made no selects"
+        assert len(usage_tot[nm]) > 0, f"{nm} recorded no action usage"
+    for r in names:                                          # matrix filled consistently from both sides
+        for c in names:
+            if r == c:
+                continue
+            assert matrix[r][c][0] == matrix[c][r][1] and matrix[r][c][1] == matrix[c][r][0], (r, c)
+
+
+def _dump_field_json(path, args, names, summaries, matrix, overall):
+    payload = {
+        "manifest": run_manifest("field", args, [], extra={"field_games": args.field_games}),
+        "agents": names,
+        "pairings": [{**s, "usage_a": dict(s["usage_a"]), "usage_b": dict(s["usage_b"])}
+                     for s in summaries.values()],
+        "matrix": {r: {c: {"w": v[0], "l": v[1], "d": v[2], "p": v[3], "lo": v[4], "hi": v[5]}
+                       for c, v in row.items()} for r, row in matrix.items()},
+        "overall": overall,
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+
+def run_field(args) -> int:
+    """Round-robin the 4 rule-based agents with rich per-matchup telemetry: win-by-opponent-deck,
+    illegal-action rate, first/second split, end-condition/prize/length breakdown, action usage.
+    A Layer-1 competence read of the field (docs/reports/evaluation_harness_report.md). Every
+    pairing is DECK-CONFOUNDED — each agent hardcodes its own deck (eval-discipline)."""
+    # Relabel the Lucario factory's "rulebased" -> "lucario" so the matrix reads cleanly (matches
+    # eval_sb3's keying); the other three already name themselves after their deck.
+    pool = [Agent("lucario", rulebased_lucario.agent, rulebased_lucario.my_deck),
+            make_abomasnow(), make_dragapult(), make_iono()]
+    names = [ag.name for ag in pool]
+    n = 3 if args.smoke else args.field_games
+    n_pairs = len(pool) * (len(pool) - 1) // 2
+
+    print(json.dumps(run_manifest("field", args, [], extra={"field_games": n, "smoke": args.smoke}),
+                     indent=2))
+    if not args.smoke and n < TRUST_N:
+        print(f"WARNING: --field-games {n} < trustworthy floor ~{TRUST_N} "
+              f"(memory eval-training-not-helping-yet); CIs will be wide.")
+    print("=" * 78)
+    print(f"Rule-based FIELD telemetry | {len(pool)} agents, {n_pairs} pairings | "
+          f"{n} games/pairing (seat-swapped){' | SMOKE' if args.smoke else ''}")
+    print("DECK-CONFOUNDED: each agent plays its OWN hardcoded deck — every cell mixes skill + deck.")
+    print("=" * 78)
+
+    summaries = {}                                           # (i,j) -> summary dict
+    usage_tot = {nm: Counter() for nm in names}
+    matrix = {nm: {} for nm in names}                        # matrix[row][col] = (w,l,d,p,lo,hi), row-relative
+    agg = {nm: _new_agg() for nm in names}
+
+    for i in range(len(pool)):
+        for j in range(i + 1, len(pool)):
+            a, b = pool[i], pool[j]
+            print(f"\n{a.name} vs {b.name}")
+            w, l, d, records, ua, ub = play_field_pair(a, b, n)
+            s = summarize_matchup(a.name, b.name, w, l, d, records, ua, ub, top_k=args.top_actions)
+            summaries[(i, j)] = s
+            usage_tot[a.name] += ua
+            usage_tot[b.name] += ub
+            _print_matchup(s)
+            matrix[a.name][b.name] = (w, l, d, *wilson(w, w + l))
+            matrix[b.name][a.name] = (l, w, d, *wilson(l, w + l))   # mirror cell, b-relative
+            _accumulate_overall(agg, a.name, b.name, records)
+
+    overall = _overall_summary(names, agg, usage_tot, args.top_actions)
+    _print_matrix(names, matrix)
+    _print_overall(names, overall)
+    _print_field_caveats()
+
+    if args.json_out:
+        _dump_field_json(args.json_out, args, names, summaries, matrix, overall)
+        print(f"\nwrote structured telemetry -> {args.json_out}")
+    if args.smoke:
+        _field_smoke_asserts(names, summaries, matrix, overall, usage_tot)
+        print("\nfield telemetry smoke OK")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=["battery", "gauntlet", "sprt"], default="battery",
+    ap.add_argument("--mode", choices=["battery", "gauntlet", "sprt", "field"], default="battery",
                     help="battery = sanity battery / --checkpoints round-robin (default); "
                          "gauntlet = score one ckpt vs the frozen anchor pool -> a comparable "
-                         "scalar; sprt = sequential A/B verdict (--checkpoint vs --baseline-checkpoint)")
+                         "scalar; sprt = sequential A/B verdict (--checkpoint vs --baseline-checkpoint); "
+                         "field = rule-based round-robin with rich per-matchup telemetry (no ckpts)")
     ap.add_argument("--games", type=int, default=20,
                     help="games per model-involving matchup (seat-swapped)")
     ap.add_argument("--baseline-games", type=int, default=200,
@@ -534,6 +971,14 @@ def main() -> int:
     ap.add_argument("--max-games", type=int, default=400, help="SPRT game cap (seat-swapped)")
     ap.add_argument("--search-count", type=int, default=4,
                     help="MCTS rollouts per move for model agents (higher = stronger, slower)")
+    ap.add_argument("--field-games", type=int, default=100,
+                    help="games per pairing in --mode field (seat-swapped); >=%d for tight CIs" % TRUST_N)
+    ap.add_argument("--top-actions", type=int, default=12,
+                    help="how many top action/card usage entries to show per agent (--mode field)")
+    ap.add_argument("--json-out", default=None,
+                    help="--mode field: also dump the full structured telemetry to this JSON path")
+    ap.add_argument("--smoke", action="store_true",
+                    help="--mode field: fast self-checking run (few games/pairing + asserts)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -551,6 +996,8 @@ def main() -> int:
         return run_gauntlet(args)
     if args.mode == "sprt":
         return run_sprt(args)
+    if args.mode == "field":
+        return run_field(args)
     return run_battery(args)
 
 

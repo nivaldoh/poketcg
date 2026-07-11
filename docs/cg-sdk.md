@@ -1,6 +1,6 @@
 # The `cg` simulator SDK
 
-Note: this file was created before the rest of the engine documentation was copied to this repo, so it's probably redundant and needs to be reviewed.
+Note: this file was created before the rest of the engine documentation was copied to this repo, so it's probably redundant and needs to be reviewed. The fuller upstream-extracted docs live in `docs/cabt-engine/` (`0. Overview.md` through `4. Utils module.md`) — this file is the shorter, project-specific quick reference; that directory is the exhaustive one.
 
 Reference for the proprietary Pokémon TCG simulator (`cg`). The API below is **ground truth** read from the vendored source at `vendor/cg-lib/cg/` (`api.py`, `game.py`, `sim.py`) — not inferred. SDK docs upstream: https://matsuoinstitute.github.io/cabt/.
 

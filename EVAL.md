@@ -13,7 +13,7 @@ volatile numbers — those live elsewhere and are linked below.
 | Methodology canon + references | `docs/eval_info.md` | the staged theory; chess/poker/MTG/Pokémon precedent; the credit-assignment problem |
 | Enforced interpretation rules | `eval-discipline` skill (`.claude/skills/eval-discipline/`) | trustworthy `n`, CIs over point estimates, mirror vs deck-confound, locked search budget |
 | Volatile numbers / what failed | memory (`eval-training-not-helping-yet`, `eval-info-staged-methodology`, `tcgmon-port-plan`) + `work_log.txt` | best checkpoint, trustworthy `n`, ruled-out experiments — they age fast |
-| Model limits that gate eval | `evaluation_harness_report.md` | why the value head is miscalibrated (gates Stage 2) |
+| Model limits that gate eval | `docs/reports/evaluation_harness_report.md` | why the value head is miscalibrated (gates Stage 2) |
 
 **Discipline:** inherit `docs/eval_info.md`'s framing, don't repeat it; encode *rules* in the skill and
 *numbers* in memory, not here. Reference every symbol by name + a grep recipe (never a line number),
@@ -93,7 +93,7 @@ harness `eval_mymodel.py` was removed 2026-07-03 with the rest of the retired BC
 - The **untrained `model0` has been the strongest checkpoint**; further training tends to *regress*
   strength (memory `eval-training-not-helping-yet`).
 - **MCTS, not the network, provides the strength.** The value head is miscalibrated on the ~50/50
-  mirror, so prefer `value_mode="rollout"` for MCTS leaf eval (`evaluation_harness_report.md`;
+  mirror, so prefer `value_mode="rollout"` for MCTS leaf eval (`docs/reports/evaluation_harness_report.md`;
   `grep -n "def mcts_agent" tcg_model.py`).
 
 **Honest limits of today's signal:** deck confound in the vs-rulebased matchup; wide CIs at small
@@ -180,7 +180,7 @@ are flagged as prior-driven, not data; and a sub-`TRUST_N` (~200) game count pri
 
 - **Stage 2 — calibrated value model → Win-Probability-Added — ⛔ DEFERRED (blocked).** WPA / blunder
   rate need a value model whose probabilities are *calibrated*. Ours isn't — its mirror training
-  target is ≈ a coin flip (`evaluation_harness_report.md`). **Gate:** validate calibration (predicted-70% spots win
+  target is ≈ a coin flip (`docs/reports/evaluation_harness_report.md`). **Gate:** validate calibration (predicted-70% spots win
   ~70%) before trusting any value-based move score. Borrow MTG-Causal-RL's six factors as a starting
   feature set (`docs/eval_info.md` §6).
 

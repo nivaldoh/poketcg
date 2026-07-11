@@ -6,7 +6,7 @@
 - We should keep the work log lean and up-to-date so that we can properly keep track of what has been tried/done so far.
 
 # Roadmap
-- The active roadmap is in [`plan.md`](plan.md). For evaluation strategy see [`EVAL.md`](EVAL.md); for the underlying methodology see [`docs/eval_info.md`](docs/eval_info.md).
+- The roadmap is in [`plan.md`](docs/plans/plan.md) (marked implemented as of 2026-07-09 — see its header for open items). For evaluation strategy see [`EVAL.md`](EVAL.md); for the underlying methodology see [`docs/eval_info.md`](docs/eval_info.md).
 
 # Context
 
@@ -106,6 +106,10 @@ Description of the move effect or additional rule text.
 ## Pokémon TCG rules and specifics
 - These will probably be important for some things. I haven't provided you an actual rule book yet, so for now just be careful with assumptions about the game.
 
+## Rule-based agent creation (`rulebased_agent_creator/`)
+- `rulebased_agent_creator/creating_rulebased_agents.md` — the workflow for building a new rule-based agent for a deck (see also `game_agents/rulebased/<deck>.py` for existing examples).
+- `rulebased_agent_creator/validate_deck.py` — validates a decklist CSV (one card ID per row) against `data/EN_Card_Data.csv`: flags unknown card IDs and copy-count violations (max 4 per card, unlimited for Basic Energy). Run: `python rulebased_agent_creator/validate_deck.py decks/<deck>.csv`.
+
 # Skills
 - Described in docs/skills_and_hooks.md.
 
@@ -152,8 +156,8 @@ inverting the cg battle loop into `reset()`/`step()`, with the rule-based oppone
 `make_opponent`), `sb3_features.py` (the cg-obs featurization — dense state/option tensors),
 `train_sb3.py` (argparse + env construction + SB3's PPO), and `eval_sb3.py` (deck × opponent matrix
 with Wilson CIs). Read the file docstrings and `--help` for the contract; the upcoming self-play +
-multi-select roadmap is `plan.md`; run history and the PPO-ceiling findings live in `work_log.txt`,
-`sb3_report.md`, and `docs/ppo/` (`ppo_ceiling_report.md`, `ppo_failure_investigation.md`,
+multi-select roadmap is `docs/plans/plan.md` (implemented); run history and the PPO-ceiling findings live in `work_log.txt`,
+`docs/reports/sb3_report.md`, and `docs/ppo/` (`ppo_ceiling_report.md`, `ppo_failure_investigation.md`,
 `ppo_saturation_report.md`). SB3 deps (training-side only): `pip install -e
 reference_repos/stable-baselines3` + `pip install sb3-contrib`.
 

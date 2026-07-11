@@ -1,0 +1,1 @@
+- A Pokémon TCG game is a race along two axes: deck-out (a player runs out of cards to draw) and prize (both players start at 6 and win when the opponents gets to 0). We don't want a model that tries to win by stalling without knowing what else to do.

@@ -12,15 +12,87 @@ Here are just some personal notes I'm scribbling. Agents should ignore this file
 - find a way to come up with a training set containing key plays (like puzzles), or at least have some way to ensure that the model has seen the main strategy of all major metagame decks
 - experiment with data generation
 - take metagame report, ensure it matches available cards, find deck lists and make sure the model knows how to play at least one of these decks against all of the others
-- use kaggle replays
+- use kaggle replays for IL
 - look for similar problems including in different domains to gain inspiration for different approaches. I think this is a two-player zero-sum imperfect-information game
 - use an llm to build a curriculum for rl? might need to build a trajectory parser for this, then we get a verifiable thing to fine-tune an llm with. Would this be an RL env? the LLM gets an easier job since it's not meant to win directly. It's can build easy replays to help warm up the RL
 - what if I tried to train the model with a backwards curriculum, like, take full trajectories, remove the last step from them, use them to teach the model how to win. Then once it learns that, remove the second-last step.
 - turn it into a multi-agent problem
 - use language model policy to play
 - create visualization to see inputs (obs, etc) and metrics while showing what's going on in a match
+- try to have a model that is able to play both TCG and Showdown (more adaptable meta-RL?) in a less data-hungry way than Metamon?       
+    - wouldn't need a faster env (like TCG Jax) for this since we want the model to learn with LESS data, NOT more.
+    - What is it the makes Metamon/AMAGO data-hungry anyway? Is this the right question to ask? Maybe it's a decent starting point. 
+    - Maybe a better question is: how does Metamon/AMAGO learn anyway?
+    - Should I focus on using LESS data, or on enabling the model to scale better + generate MORE and BETTER data relatively to Metamon?
+        - The kaggle competition has a limit for number of MB uploaded in submissions, so the model can't be too large for that
+        - If I were to use Metamon, I'd need AMAGO, which in turn needs lots of off-policy data. Maybe I just need to generate that? Metamon used competitive data from high-skill players though, so how would I get that? This game might also be even more data-intensive? (this I still need to check and compare)
+        - Would it be enough to adapt Metamon to the TCG env and simply throw it enough training data? Or does Metamon make some kind of assumption that wouldn't work here?
+    - [TODO: try to take ideas from metamon codebase + paper. need to keep in mind the differences between Showdown and TCG. Can look into that after this?]
+    - to adapt metamon I'd probably have to start adapting AMAGO. So I should start by reading its paper and checking if we break any assumptions there? Other than requiring lots of data for off-policy training
+    - i should read the paper from amy zhang and eugene vinitsky that revisits PPO for imperfect-information games, see if that applies here and if so, take ideas and code from there. Can eventually try to reach out to one of the authors to ask questions.
+- should probably start training by overfitting on a single deck against a single other deck and opponent, and then slowly expand from there checking what limitations appear. I have the custom visualizer and it will probably be useful here
+    - should I try to start with cold-start self-play and then benchmark it as I go and solve saturation points as they appear?
+- i should at some point count the total amount of variables involved in this game and compare it to showdown
+- need to improve the repo for agents to work with. better skills, organize files, facilitate subagent exploration, etc
+    - create skills like how to do self-play properly, etc?
+    - need to create hook to help claude code ramp up
+        - context: tcg kaggle competition
+        - plan: self-play cold start
+        - repo structure: ...
+        - ...
+- so there are two options to start with (?): 1.cold-start self-play RL, 2.having lots of data for IL warm-start
+    - being able to do similarly to metamon would be great, but then I'd need lots of competent gameplay data (including expert-level) for the warm-start IL, otherwise it probably wouldn't work well?
+        - if I were to gather data, what options do I have?
+        - set claude code on loop to auto-generate code for more rulebased agents? it probably needs to keep verifying correctness turn by turn by interacting directly with the sim? Need to give it one deck at a time. Verify that they generate valid agents that would serve as a decent baseline
+        - should I gather data from web (e.g. competitive TCG video subtitles) to feed to a coding agent to have it generate rule-based agents that would serve as a decent source of data for IL warm start?
+            - so first I'd have to gather as much info about competitive TCG discussions as possible?
+            - then feed it to agent
+            - have an LLM pick an easy deck for a rule-based agent to pilot?
+            - I can start by seeing how a coding agent does with limited info + starter template decks as examples. Might need to give it simulator API docs. Write Skills for it
+            - Should I train an LLM with RL using the simulator as a verifier in order to have it generate good rule-based agent code?
+            - Then I can see how it performs
+- should I try to start by benchmarking a lot of things that are game-related without being tied to a specific algorithm, like how often the agent wins by deck-out, so that I can directly measure and address specific flaws as they come up?
 
-from time to time have a /goal for a critic that has access to TCG rules and checks if we're making any conceptual mistakes
+- is synthetic data bad for self-play? could i generate a good curriculum with it?
 
 
-I need to externalize the structure and execution flow of the code to understand what's going on so that I don't have to keep track of everything in my head. I'm trying to create an initial mental model. I'd like you to help me write this overview in execution_flow.md. First of all I need to understand things at a high-level. What are the main ideas happening, what are the files being used, what is the execution flow of the data. We need to keep the language simple to make it easier for me to absorb. Probably it will be ideal to always show what happens in the execution flow from one step to the next. I mean, if there's too much info for me to hold in my head all at once I would struggle, but maybe if I only have to hold info in these tiny sequential two-by-two pieces it will be easier? Keep it short and focus on the high-level ideas. We can start expanding it once I got those down. I need to see the execution in a concrete manner to actually understand it. I know that logs tend to help me with this as they show what is happening and in what order, but I'm trying to avoid polluting the code, at least for now. However, seeing a concrete example of inputs and outputs, with their actual values, would certainly help. We have something already written in execution_flow.md, but it doesn't cover the entire codebase. We need to refine it to become more comprehensive in that sense, but without forcing me to overextend my memory. Also, probably having a single execution flow is not ideal. The code has multiple execution flows at different levels, so it's probably best if we write them separately. We should have a main execution flow from the perspective of the main high-level ideas (dumb example: "preprocessing -> training -> eval" would be one level of execution flow, then "inputs -> battle -> outputs" would be another, then another one could "zoom in" in the NashPG algorithm, and so on). We can think of these different execution flows as collapsible boxes that we can show or hide as needed, making it easier to understand things from top-down. It's totally fine to have some repeated info accross these execution flows (e.g. showing the inputs in multiple places). Don't worry about explaining the theory. You also don't need to worry about explaining things like how the rule-based agents work (if needed I could just request a separate "execution flow" for that). Help me write this so I can finally start grasping the code!
+what is my focus here? What is the question to ask? Am I testing RL? Am I trying to win? Am I creating a benchmark? Should I try to generate good data to give the model a curriculum?
+
+
+________
+
+What do we need to win? An agent that combines leaderboard performance + Hackathon evaluation (innovation).
+
+Major areas:
+- Data
+- Agent
+- Evals
+
+Agent:
+- Doesn't have to be necessarily trained
+    - Rule-based / heuristic
+    - Pre-trained LLMs, Pokéchamp-style
+- Trained agents:
+    - Full-supervised
+    - IL warm-start + RL (Metamon)
+    - RL with cold start?
+    - Fine-tuned LLM
+    - etc etc
+
+Trained agents will need data.
+- Sources:
+    - Kaggle replays (likely low-quantity and low quality?)
+    - Rule-based / heuristic bots
+    - Self-play
+    - Web (extreme option. Probably we won't have time for this)
+    - Manual... (at least to have a few very high-quality examples?)
+    - Artificially generated (e.g. can we get an LLM to generate trajectories?)
+
+Weaker agents should be useful to generate data for stronger agents. Generating data (high-quality curriculum?) is probably our priority. We need to collect increasingly higher-quality checkpoints and trajectories.
+
+Our long-term goal is to have an ideal agent that:
+- Knows how to play a minimal amount of decks that it can rotate to do well in the competition's ladder (there's probably no single deck that will clear the field)
+- Knows how to generalize/adapt as well as possible against any opponent style and deck
+- Doesn't get exploited
+- Doesn't leave us bankrupt
+- Runs within the time limit

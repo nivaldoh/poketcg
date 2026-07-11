@@ -115,7 +115,7 @@ def main() -> int:
               f"deck={info['deck_name']} opp={info['opp_name']} mode={info['win_mode'].get('mode')}",
               flush=True)
 
-    # 3) Scripted multi-select micro-drives (plan multiselect.md §6): always-STOP-when-legal
+    # 3) Scripted multi-select micro-drives (docs/plans/plan-multiselect.md §6): always-STOP-when-legal
     # exercises the empty-submit decline (battle_select([]) at minCount==0) + early stop;
     # always-pick-max exercises auto-commit at maxCount. Both submit real battle_select lists — an
     # engine-invalid one raises out of env.step and fails the test.

@@ -8,6 +8,9 @@ ptcg_engine/
 # Training output / checkpoints
 out/
 
+# record_battle.py debug trace output (regeneratable)
+trace.json
+
 # Downloaded Kaggle datasets (card metadata, episode replays)
 data/
 

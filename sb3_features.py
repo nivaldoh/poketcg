@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """cg-battle featurization for the SB3 stack: `encode_state` / `encode_options` + their dims.
 
-Moved verbatim (2026-07-06) out of the retired `legacy_ppo/ppo_model.py` — the SB3 env
-(`sb3_env.obs_to_gym`) and the eval adapter are the only consumers now, so the featurization lives
-here as an SB3-owned module rather than reaching back into the paused hand-rolled stack. The
-functions are byte-identical to the originals (no logic change): existing `out/*.zip` checkpoints
-were trained against these exact features and keep loading.
-
 Both encoders take an `Observation` (from `to_observation_class`) framed from the ACTING seat and
-return dense features PLUS integer card/attack id indices. The stock `MultiInputPolicy` has no
-embedding tables, so `obs_to_gym` currently DISCARDS the id indices — they are preserved here for a
-future embedding-capable policy (and so the move stays a pure move). See
+return dense features PLUS integer card/attack id indices; `encode_zone_ids` adds the hand/discard
+id vectors. `obs_to_gym` (sb3_env) forwards ALL the id indices as int64 obs keys for the
+embedding-capable policy (`tcg_net.TcgCore` via `sb3_policy.TcgMaskablePolicy`). See
 `tcg_model.get_decoder_input` for the authoritative OptionType→field dispatch `encode_options`
 mirrors.
 
@@ -56,8 +50,15 @@ N_SPECIAL_COND = max(s.value for s in SpecialConditionType) + 1  # 5
 BENCH_SLOTS = 5             # engine benchMax is 5; we lay out 5 explicit (order-sensitive) slots
 # Sentinel id per vocab (padding row): valid ids are [0, card_count-1] / [0, attack_count-1]; the
 # sentinel is the extra index at card_count / attack_count, used for empty slots / unknown ids.
+# Never 0 — id 0 is a real card. Embedding tables use it as padding_idx (exact-zero rows).
 CARD_PAD = card_count
 ATTACK_PAD = attack_count
+
+# Zone-id widths for encode_zone_ids. A discard pile is deck-bounded (<=60) so D_MAX never
+# truncates; a hand CAN exceed H_MAX (rare) and is truncated — CGEnv.hand_overflows counts it
+# (raise H_MAX if it fires: weights survive via pooling, but the obs-space width breaks checkpoints).
+H_MAX = 20
+D_MAX = 60
 
 # ---------------------------------------------------------------------------------------------
 # Feature-block widths, summed into the two public dims. Defined as arithmetic over the constants
@@ -126,7 +127,7 @@ def _card_static(card_id):
     """[_OPT_STATIC_DIM] static card attributes from card_table; all-zero if id unknown.
 
     ex / megaEx are emitted as SEPARATE flags. DOC-vs-ENGINE INCONSISTENCY (verify with
-    all_card_data(), do not take on faith): the API doc ("docs/cabt engine/1. API module.md",
+    all_card_data(), do not take on faith): the API doc ("docs/cabt-engine/1. API module.md",
     CardData) says `ex` is "True if Pokémon ex (including Mega Evolution Pokémon ex)", but in the
     live card table `ex` and `megaEx` are MUTUALLY EXCLUSIVE — all 30 megaEx cards have ex=False and
     no card has both. Per the repo convention the compiled engine is ground truth over docs
@@ -234,6 +235,30 @@ def encode_state(o):
     ids = []
     feats = g + _side_block(me, ids) + _side_block(opp, ids)
     return torch.tensor(feats, dtype=torch.float32), torch.tensor(ids, dtype=torch.long)
+
+
+def _zone_ids(cards, width):
+    """LongTensor[width]: card ids of a zone's first `width` cards, CARD_PAD-filled past the end.
+    `cards` may be None (opponent hand) — treated as empty."""
+    ids = torch.full((width,), CARD_PAD, dtype=torch.long)
+    for j, c in enumerate((cards or [])[:width]):
+        ids[j] = _safe_card_id(getattr(c, "id", None))
+    return ids
+
+
+def encode_zone_ids(o):
+    """-> (hand_ids: LongTensor[H_MAX], my_discard_ids: LongTensor[D_MAX],
+           opp_discard_ids: LongTensor[D_MAX]).
+
+    Card ids for the acting seat's hand plus BOTH discard piles — the zones encode_state covers only
+    as counts. My hand is visible (`PlayerState.hand`; the opponent's is None — counts only, so no
+    opp_hand key exists); both discards are public. Hands longer than H_MAX are truncated (counted
+    by CGEnv.hand_overflows). Sibling of the frozen base encoders: a pure Observation -> ids read,
+    no runtime sub-step state, consumed by obs_to_gym for the embedding-capable policy."""
+    st = o.current
+    me = st.players[st.yourIndex]
+    opp = st.players[1 - st.yourIndex]
+    return _zone_ids(me.hand, H_MAX), _zone_ids(me.discard, D_MAX), _zone_ids(opp.discard, D_MAX)
 
 
 def _resolve_option(o, opt, yi):
@@ -371,6 +396,21 @@ if __name__ == "__main__":
                 assert dense_o.shape == (n, OPTION_DIM), (dense_o.shape, OPTION_DIM)
                 assert cids.shape == (n, N_OPT_CARD_SLOTS) and aids.shape == (n, N_OPT_ATTACK_SLOTS)
                 assert cids.dtype == torch.long and aids.dtype == torch.long
+                hand_ids, my_disc, opp_disc = encode_zone_ids(o)
+                assert hand_ids.shape == (H_MAX,) and my_disc.shape == (D_MAX,) and opp_disc.shape == (D_MAX,)
+                for t in (state_ids, hand_ids, my_disc, opp_disc):
+                    assert t.dtype == torch.long and 0 <= int(t.min()) and int(t.max()) <= CARD_PAD
+                assert 0 <= int(cids.min()) and int(cids.max()) <= CARD_PAD
+                assert 0 <= int(aids.min()) and int(aids.max()) <= ATTACK_PAD
+                # slot-exact zone check: hand slot j must be exactly hand card j's (safe) id
+                mh = o.current.players[o.current.yourIndex].hand or []
+                for j in range(H_MAX):
+                    exp = _safe_card_id(mh[j].id) if j < len(mh) else CARD_PAD
+                    assert int(hand_ids[j]) == exp, (j, int(hand_ids[j]), exp)
+                md = o.current.players[o.current.yourIndex].discard
+                for j in range(D_MAX):
+                    exp = _safe_card_id(md[j].id) if j < len(md) else CARD_PAD
+                    assert int(my_disc[j]) == exp, (j, int(my_disc[j]), exp)
                 checked += 1
             obs = battle_select(auto_resolve(sel))
         battle_finish()

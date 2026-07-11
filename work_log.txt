@@ -445,3 +445,173 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   step1 action = 60-card deck per contract). NOTE: configuration.seed exists at the
   kaggle_environments wrapper level (not necessarily the cg engine's internal RNG) — flagged,
   not yet investigated vs the "cg RNG unseedable" finding.
+
+2026-07-08 — Self-play mixtures + frozen snapshots + warm-start (the roadmap "frozen self-play"
+  follow-on; ~50 lines, training-side only). sb3_env: make_opponent grew policy_provider=None —
+  threaded through the comma + @eps recursion sites, new terminal branch resolves 'self' to it —
+  so 'rulebased,rulebased,self' (repetition = weighting) and 'self@eps' now build; CGEnv.__init__'s
+  bare-'self' special case + v1 rejection loop collapsed to: detect 'self' among base specs (sets
+  _policy_opponent_spec) and always delegate to make_opponent(policy_provider=self._next_policy_
+  opponent) — bare 'self' returns the provider directly (bit-identical lazy-install semantics);
+  standalone make_opponent('self') still raises. train_sb3: (1) install condition widened to any
+  spec containing 'self'; (2) NEW --selfplay-refresh N: freeze the self opponent via save->load
+  roundtrip (out/{prefix}_selfplay_opp.zip = artifact AND live opponent, ~1-2s, frozen on GPU),
+  SelfPlayRefreshCallback re-freezes every N env steps (next-episode effect — opp fn latched per
+  game in _start_battle); t=0 install sits in train() BEFORE learn() because _setup_learn resets
+  the env before on_training_start (verified in SB3 source); 0 = live mirror (unchanged default);
+  (3) NEW --init-from ZIP: warm-start policy weights ONLY via load_from_zip_file + load_state_dict
+  (deliberately NOT MaskablePPO.load — that restores zip hyperparams + old Adam state; a warm leg
+  = fresh run with warm weights), obs-space equality assert gives a friendly error on stale
+  pre-multi-select zips. VERIFIED: make_opponent unit checks (self/frozen/self@eps standalone all
+  still raise; provider builds all mixes); CGEnv 'rulebased,self' 12-reset draw test (both self +
+  field names appear); --smoke gates: rulebased,self (install line, OK), self + refresh 512
+  (exactly 3 snapshot lines @0/512/1024 + zip on disk), --init-from smokemix (loads, OK),
+  --selfplay-refresh without self (clean SystemExit), --init-from sb3big (stale-zip assert fires);
+  utils/run_smoketest_sb3_env.py green post-edit (check_env + coverage + singleton discipline).
+  Purpose: tonight's ceiling-search campaign (plan: rustling-squishing-goblet) — baseline 800k
+  rulebased curve, then rulebased,rulebased,self + refresh leg from the baseline's eval-best.
+
+2026-07-08 — Ceiling campaign Leg 1 (baseline at scale under multi-select): rb800k = fresh
+  MaskablePPO vs the rulebased field, 819200 decisions / 3073s (~267 fps cuda), ckpt every 51200
+  (16 zips), 0 N_MAX overflows. SATURATION CURVE (lucario mirror, sampled, n=200/pt, seed 11):
+  FLAT from the first checkpoint — 51k=27.5 (21.8-34.1) ... 153k=32.5 (26.4-39.3) ...
+  358k=32.5 ... 819k=24.0 (18.6-30.4); every CI overlaps every other; no knee, no climb. The
+  architecture saturates the lucario-mirror read by ~51-150k steps at ~28-32%. POOLED MIRROR
+  (4 diagonal cells, 800 g/ckpt) on candidates 153k/358k/563k/819k: 13.25 / 11.25 / 12.25 /
+  12.9% — indistinguishable; eval-best = ckpt 153600 (13.25% pooled; lucario 27.0, abomasnow
+  14.5, dragapult 4.0, iono 7.5). Reference caveat: sb3big (pre-multi-select, 1.5M steps)
+  pooled ≈ 18.4% (lucario 40.0/abom 20.5/drag 7.5/iono 5.5) — pooled CIs barely separate
+  (15.7-21.1 vs 11.1-15.8), suggesting the multi-select stack at 800k reads slightly BELOW the
+  old 299/70 stack at 1.5M; steps-vs-obs-burden confound unresolved (flagged for theory review,
+  NOT claimed as regression). Interpretation consistent with the standing prize-race diagnosis:
+  more steps don't help; credit signal, not capacity, binds. Leg 2 launched: mix500k =
+  --init-from ckpt 153600, --opponent rulebased,rulebased,self (2:1 field:self),
+  --selfplay-refresh 51200 (frozen snapshots), 512000 steps, same ckpt cadence.
+
+2026-07-08 — Ceiling campaign Leg 2 (frozen self-play mixture): mix500k = --init-from rb800k ckpt
+  153600 (Leg-1 eval-best), --opponent rulebased,rulebased,self + --selfplay-refresh 51200, 512000
+  decisions / 2373s (~216 fps; ~20% self-play inference cost), 11 snapshots as designed (t=0 = the
+  warm-start weights, then every 51200). ep_rew_mean settled ~-0.45 ≈ the mixture arithmetic
+  ((2/3)(-0.8) + (1/3)(0)) — machinery behaving. VERDICT: NO field transfer. Lucario-mirror curve
+  (n=200/pt) flat 25.0-35.0%, every CI overlaps Leg 1's plateau; pooled mirror (800 g) 11.4%
+  (ckpt 358k) / 12.4% (final) vs Leg 1's 13.25% — indistinguishable. Extends the legacy
+  "self-play NON-TRANSFER" finding to GROUNDED mixtures (majority rule-based field + frozen
+  snapshots) under SB3 + multi-select: the mixture neither helps nor hurts the rule-based read.
+  Leg 3 launched: eps500k = same warm-start, --opponent rulebased,rulebased@0.25 (1:1 full:ε-
+  weakened field, the reward-de-starvation curriculum; NOTE per-archetype @eps like 'iono@0.25'
+  is NOT expressible — make_opponent kinds are only {rulebased,random,self}).
+
+2026-07-08 — Ceiling campaign Leg 3 (ε-curriculum probe): eps500k = --init-from rb800k ckpt 153600
+  (same base as Leg 2 — parallel branches), --opponent rulebased,rulebased@0.25 (1:1 full:weakened
+  field), 512000 decisions / 2063s. VERDICT: no de-starvation effect. Lucario-mirror curve flat
+  25.5-36.0% (all CIs overlap both prior legs); pooled mirror 13.15% (ckpt 153k) / 13.6% (ckpt
+  460k) vs Leg-1 13.25% / Leg-2 12.4%; the dead columns stayed dead (dragapult 1.5-3.5%, iono
+  6-6.5% mirrors). ALL THREE LEGS land on the same plateau — scale (819k), grounded frozen
+  self-play (2:1 + 51.2k refresh), and ε-weakening all fail to move ~13% pooled / ~30% lucario
+  mirror, reached by ~150k steps. Campaign-best (noise-level pick of equals) =
+  eps500k_ckpt_460800; full 16-cell matrix running for the report.
+
+2026-07-08 — Ceiling campaign wrap-up. Campaign-best (eps500k_ckpt_460800) full 16-cell matrix
+  (sampled, n=200/cell): LOSES ALL 16 (mirrors lucario 30.5 (25-37) / abomasnow 10.5 / dragapult
+  2.0 / iono 7.5 — the "13.6%" pooled pick re-read 12.6%, winner's-curse as expected). REPORT:
+  NEW sb3_selfplay_report.md = the campaign write-up (headline: architecture saturates by ~150k
+  decisions at ~30% lucario-mirror / ~13% pooled; scale, grounded frozen self-play, ε-curriculum
+  all flat; recommendation = per-decision credit / IL warm-start from kaggle replays / per-option
+  head — the cheap levers are now exhausted with data). DATA BANKED (out/, gitignored):
+  3 checkpoint families (rb800k 16+final, mix500k 10+final+selfplay_opp, eps500k 10+final; all
+  303/72 zips, ~15MB each; reuse anchors rb800k_ckpt_153600 / eps500k_ckpt_460800), curve+pooled
+  eval logs per leg + campaign_best_matrix.log, out/traces/campaignbest_vs_{rulebased,abomasnow,
+  dragapult,iono}.json + campaignbest_selfmirror.json (8-game seat-swapped record_battle sessions
+  w/ per-decision probs+values, visualizer-compatible; self-mirror sanity: 6/2 seat split), and
+  out/kaggle_replays refreshed 5→47 episodes (fetch_kaggle_replays.py, 42 new). Code changes
+  (sb3_env.py + train_sb3.py, ~50 lines) left UNCOMMITTED for review per session convention.
+
+2026-07-09 — plan.md IMPLEMENTATION (id-aware policy + BC warm-start), phases 0-2 + B1 landed.
+  All plan claims re-verified against source before coding (3 parallel audits: obs/featurization,
+  sb3_contrib 2.9.0 policy touch surface, BC-side teachers/credit_probe); confirmed with nuances:
+  _trim_obs drops logs (safe — no featurization path reads o.logs), teacher MIRROR games share
+  module globals across seats (real dragapult/lucario corruption; bc_collect fixes it with fresh
+  per-seat importlib instances), features extractor is built in __init__ not _build, and
+  _get_constructor_parameters is NOT on the MaskablePPO save/load path (policy_kwargs is).
+  LANDED: Phase 0 sb3_features.encode_zone_ids + H_MAX=20/D_MAX=60 + 6 int64 id obs keys
+  (state_card_ids[12], opt_card_ids[128,2], opt_attack_ids[128,1], hand_ids[20],
+  my/opp_discard_ids[60]) + hand_overflows telemetry; all 3 env self-tests pass. Phase 1
+  tcg_net.TcgCore (516k params; zero-init shared card/attack embeddings padding_idx=PAD,
+  per-option latent MLP, ctx = state ++ 12 board embs CONCATENATED (deliberate deviation from
+  plan's pooling — slots are fixed-positional) ++ pooled hand/discards ++ menu/picked masked-mean
+  pools, shared per-option scorer ×0.01-init + linear value head); self-test incl. permutation +
+  pad-leak probes. Phase 2 sb3_policy.TcgMaskablePolicy (_build/forward/evaluate_actions/
+  get_distribution/predict_values via one _run path, stock MaskableCategorical; CORE_KWARGS
+  canonical dict in tcg_net, threaded via policy_kwargs) — save→load bit-identical (cpu), smoke
+  train ok, self-play snapshot round-trip ok, eval_sb3 16-cell ok, record_battle probs/value ok,
+  --init-from new-era chaining ok; stock MultiInputPolicy path DELETED (checkpoint break
+  documented in train_sb3 docstring — all pre-2026-07-09 zips dead). Phase B1 bc_collect.py:
+  2000 teacher-vs-teacher games (16 ordered pairings, seat-swapped, ONE agent call per node),
+  286,035 recorded decisions (143/game — plan's ~37 anchor was credit_probe's 40-cap artifact),
+  1.19 GB in 16 shards, replay+featurize self-test passed per shard, 0.18 s/game idle.
+  OPS LESSON (7GB box): concurrent PPO train + collection + BC smoke → OOM-killed Phase M at
+  ~49k steps; ONE heavy job at a time from now on. bc_train workers default 0 (fork COW refcount
+  trap would duplicate the 1GB blob store). IN FLIGHT at log time: bc_train.py full run
+  (257k/28.7k rows game-split; masked CE + 0.5·MSE value warm-start; smoke overfit gate passed
+  on single-select acc 0.971 vs measured ~99.4% identical-option tie ceiling); Phase M restart,
+  --bc-init t=0 zip + G1 eval queued behind it. NEW FILES: tcg_net.py sb3_policy.py bc_collect.py
+  bc_train.py (+ --bc-init/--target-kl in train_sb3.py). All uncommitted per session convention.
+
+2026-07-09 — BC warm-start campaign RESULTS (plan.md phases M/B2/B3 complete; full write-up =
+  bc_warmstart_report.md). bc_train full run (257k/28.7k rows, 4 epochs, 721s): holdout acc
+  0.796 (single 0.803 / multi 0.765, floor 0.217) — value ev peaked 0.106 @epoch2 then overfit
+  to -0.03 at the best-by-acc epoch (critic warm-start = open item; PPO's vf loss recovered ev
+  to ~0.4-0.6 during fine-tune). GATE G1 PASSED: pure-BC zip (bcpure_sb3.zip, t=0 via --bc-init,
+  logit-identity OK) pooled mirror 20.0% (17.4-22.9) CI-ABOVE the ~13% plateau (11.1-15.8); all
+  4 mirrors alive (28.6/30.0/7.0/14.5). Phase M (new net, PPO-only, 204.8k): 13.9% (11.6-16.4)
+  = plateau unchanged — architecture alone is NOT the lever; credit diagnosis confirmed directly.
+  Fine-tune LEG 1 (stock ent 0.01, lr 5e-5, kl 0.02) FAILED as plan risk 5 predicted: flat pooled,
+  iono mirror monotone decay to 2.5% (CI-disjoint below anchor) — slow forgetting. LEG 2/3
+  (--ent-coef 0 --lr 3e-5 --target-kl 0.01, leg 3 = --init-from chain): climbs to ~24% pooled and
+  HOLDS across 307k steps; dragapult mirror 22.5 (17.3-28.8) vs BC 7.0 (4-11) DISJOINT — first
+  CI-separated per-deck PPO gain ever on this project. EVAL-BEST = bcft3_ckpt_153600_steps.zip,
+  confirmation matrix re-read 24.0% pooled mirror (no winner's curse), all-16-cell pooled 21.5%
+  vs RL-era 12.6; still loses all 16 vs teachers (clone ceiling: acc 0.796 compounds over ~70
+  decisions/game). ent_coef now a train_sb3 CLI flag. hand_overflows/overflows = 0 everywhere.
+  NEXT (ranked, see report): 4k-game BC collection + more epochs (holdout acc still climbing);
+  value-only refit early-stopped on ev; iono accuracy-by-deck probe; BC-anchored KL (v2).
+
+2026-07-10 — Lucario-mirror specialization campaign (single deck vs its rule-based mirror; goal
+  >50% or a diagnosed ceiling; plan ~/.claude/plans/ticklish-frolicking-knuth.md, results
+  lucario_mirror_report.md). HEADLINE: 82.6% (79.8-85.1, 661/139/0, n=800 sampled) at
+  out/lucb2_ckpt_204800_steps.zip — >50% exceeded with Wilson LB ~80%; greedy 85.0%. FLAGGED
+  (pre-registered signature F): 100% of audited wins are DECK-OUT (teacher-mirror norm = prize
+  wins 19/22) — a degenerate exploit of the fixed teacher, honest per rules (0 draws anywhere)
+  but not expected to transfer. Code (+~25 lines): sb3_env.make_opponent 'rulebased:<deck>'
+  pinned-archetype spec (composes with @eps/comma-mix, self-tested); bc_collect --teachers +
+  --games-per-shard chunked writes (replay-checked per chunk; a 4k-game pairing = ~2.3GB would
+  OOM as one pickle). Causal chain: (1) 4k-game lucario-mirror BC (537,922 rows) lifted holdout
+  acc 0.796->0.934 (still climbing @ epoch 8), pure clone 38.8% (34.1-43.6) n=400 = the old
+  4-deck+PPO best matched by cloning alone (win% tracks clone acc); (2) quiet recipe (ent 0,
+  lr 3e-5, kl 0.01) +8pp then SATURATED ~46-47% across 2x307k legs — pre-registered signature D
+  confirmed (approx_kl 0.0025-0.0067 << 0.01, clip_frac ~0.02); (3) Arm B (lr 1e-4, kl 0.02,
+  same everything else) 46.8 -> 84.0 in ONE 307k leg (~26 min), leg 2 saturated ~83-85% =
+  the setup ceiling (exploit reliability, not capacity). Phase 2 control: pinning the opponent
+  and re-running quiet PPO on the OLD 4-deck clone was FLAT (n=400 confirm 33.5) — data, not
+  opponent-pinning, was the lever. n=200 curve spikes (40.5/51.0/50.0) repeatedly failed n=400
+  confirms — winner's-curse discipline load-bearing. Ceiling tree: D=blocker (fixed), F=top
+  (deck-out), A/C/E did not bind (E: BC critic ev 0.170 epoch 1 ~ supervised bar 0.167; PPO
+  routed AROUND the prize race rather than solving credit). NEXT (ranked, see report): break the
+  exploit via opponent mixes (rulebased:lucario,self / @0.1); 4x4 field-transfer read of lucb2;
+  retry the BOLD budget on the 4-deck bc_core (bcft3 only ever got the quiet recipe — the 24%
+  pooled plateau may be the same artifact); more BC data/epochs (acc un-plateaued).
+
+2026-07-10 (later) — REPO REORG (docs/code untouched otherwise). Root was cluttered with ~14 loose
+  .md/.txt files; consolidated into docs/reports/ (bc_warmstart_report.md, credit_probe_report.md,
+  lucario_mirror_report.md, sb3_report.md, sb3_selfplay_report.md, evaluation_harness_report.md,
+  ptcg_engine_report.md) and docs/plans/ (plan.md, plan-multiselect.md — renamed from
+  "plan multiselect.md", dropping the space). docs/cabt engine/ -> docs/cabt-engine/ (same reason).
+  Deleted stray gitignored __pycache__ dirs. No .py file moved/renamed (sb3_policy.py's own
+  docstring warns MaskablePPO checkpoints pickle by module path; every root .py is a flat sibling
+  import of the others) — zero import-breakage risk by construction. Updated every bare-filename
+  cross-reference found by grep (README.md, EVAL.md, CLAUDE.md, code-comment docstrings, the two
+  eval-discipline skill files, docs/skills_and_hooks.md, docs/ppo/ppo_saturation_report.md, and the
+  moved docs themselves) to the new paths, plus the persistent memory files that cited them. Also
+  fixed CLAUDE.md's stale SB3-stack bullet (still described the retired stock MultiInputPolicy;
+  now names tcg_net.py/sb3_policy.py/bc_collect.py/bc_train.py) and added a docs/cg-sdk.md pointer
+  to the fuller docs/cabt-engine/ docs. Left model.md and trace.json in place (user call).
