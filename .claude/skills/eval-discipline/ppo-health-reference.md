@@ -52,7 +52,7 @@ each stat is computed (grep the stat name).
 
 | Metric | Reading | Source |
 |---|---|---|
-| `ev_true_pre` | **THE critic gate.** Holdout explained variance of act-time V vs the true final outcome G. Out-of-sample by construction (act-time values predate the update). Healthy = ≫ 0 sustained; 0.0 is the no-contrast-batch sentinel, not a score. | `[measured-here]` + `evaluation_harness_report.md` §1a; closest literature analogue is Engstrom's *held-out* value-loss logging (`log_value_losses` in `src/policy_gradients/logging.py`) `[engstrom-code]` |
+| `ev_true_pre` | **THE critic gate.** Holdout explained variance of act-time V vs the true final outcome G. Out-of-sample by construction (act-time values predate the update). Healthy = ≫ 0 sustained; 0.0 is the no-contrast-batch sentinel, not a score. | `[measured-here]` + `docs/reports/evaluation_harness_report.md` §1a; closest literature analogue is Engstrom's *held-out* value-loss logging (`log_value_losses` in `src/policy_gradients/logging.py`) `[engstrom-code]` |
 | `explained_var` | IN-SAMPLE, post-update, on the just-fitted batch, against targets containing the critic's own bootstraps. **Never accept as evidence the critic works**: it read 0.4–0.5 while holdout EV was −0.013 (2026-07-02 incident). | `[measured-here]` |
 | `value_mean` | pinned near a constant (e.g. ≈ the base rate, −0.965 in the incident) = saturated/collapsed critic even if rank-ordering (AUC) looks fine | `[measured-here]` |
 | `value_loss` | trend signal only; low value_loss on the training batch is NOT critic health (same memorization trap as explained_var) | `[measured-here]`; curve-shape-vs-reference check `[blog]` |

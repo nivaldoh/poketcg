@@ -110,7 +110,7 @@ without new evidence. MCTS, not training, has been providing MyModel's strength.
   (`eval-training-not-helping-yet`, `eval-info-staged-methodology`) — look them up, don't copy here.
 - Comparison method (frozen gauntlet / SPRT / move-agreement; why CRN is impossible): **`EVAL.md` §5**
   — point at it, don't restate.
-- PPO telemetry design + the 3-layer roadmap: **`evaluation_harness_report.md`** (§1a is what
+- PPO telemetry design + the 3-layer roadmap: **`docs/reports/evaluation_harness_report.md`** (§1a is what
   `STATS_KEYS` implements); distilled reading guide: **`ppo-health-reference.md`** here.
 
 ## Drift-resilience
