@@ -669,3 +669,20 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   branching rollouts from real positions, seeded/deterministic local eval. LOCAL TOOL ONLY — the
   rebuilt .so never ships in a submission; engine source committed to this PRIVATE repo (2026-07-11)
   with the license note kept in .gitignore/README (competition-use-only, never redistribute).
+
+2026-07-11 — Rewrote rulebased_agent_creator/heuristic_agent_generator.md (design doc for the
+  heuristic-agent factory; docs only, no implementation). Was an engine-agnostic sketch (renamed
+  from "deck-specific heuristic-agent-generator.md", content unchanged); now grounded in the repo:
+  the real agent(obs)->list[int] contract + _finish want-clamping, an engine-quirks ledger
+  (ATTACH pairs, pending_attach_type, select.effect, IS_FIRST, ACTIVATE stadium trap, Koraidon
+  attack-id swap, shields, Fairy Zone, ...), framework = extraction from the 7 hand-built agents
+  (burn-family context dispatch; get_card/prize_count/etc. duplication inventory; importability +
+  fresh_teacher constraints; lucario+lilies regression-port validation), scenarios = state
+  replicator (seed + reach action-prefix as canonical form, blobs as build-tied cache), loop gates
+  wired to run_smoketest_battle (deck smoke, random agents — corrected: NOT an agent-contract
+  check) / scenario runner / seeded record_battle batches, acceptance tiers with no absolute
+  pooled-win% gate (deck-structural plateaus), data-gen = extend bc_collect schema with per-option
+  scores (agents already compute + discard them) + confidence label (score-band normalization
+  caveat flagged as theory), variant action-disagreement gate, registration checklist
+  (eval.py/record_battle/bc_collect touch points), repo layout reconciled to game_agents/rulebased/
+  + rulebased_agent_creator/ (no parallel deck_factory/ tree), 5 open questions.
