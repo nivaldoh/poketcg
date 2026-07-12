@@ -50,6 +50,9 @@ import lucario as rulebased_lucario
 import abomasnow as rb_abomasnow
 import dragapult_ex as rb_dragapult
 import iono as rb_iono
+import simple_raging_bolt_burn as rb_raging_bolt
+import real_raging_bolt_burn as rb_real_raging_bolt
+import lilies_clefairy_ex_mega_kangaskhan_ex as rb_lilies_clefairy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -90,6 +93,18 @@ def make_dragapult() -> Agent:
 
 def make_iono() -> Agent:
     return Agent("iono", rb_iono.agent, rb_iono.my_deck)
+
+
+def make_raging_bolt() -> Agent:
+    return Agent("raging_bolt", rb_raging_bolt.agent, rb_raging_bolt.my_deck)
+
+
+def make_real_raging_bolt() -> Agent:
+    return Agent("real_raging_bolt", rb_real_raging_bolt.agent, rb_real_raging_bolt.my_deck)
+
+
+def make_lilies_clefairy() -> Agent:
+    return Agent("lilies_clefairy", rb_lilies_clefairy.agent, rb_lilies_clefairy.my_deck)
 
 
 def make_model(path: str) -> Agent:
@@ -507,7 +522,10 @@ def run_manifest(mode: str, args, ckpt_paths: list, extra: dict = None) -> dict:
                   "lucario": deck_hash(rulebased_lucario.my_deck),
                   "abomasnow": deck_hash(rb_abomasnow.my_deck),
                   "dragapult_ex": deck_hash(rb_dragapult.my_deck),
-                  "iono": deck_hash(rb_iono.my_deck)},
+                  "iono": deck_hash(rb_iono.my_deck),
+                  "raging_bolt": deck_hash(rb_raging_bolt.my_deck),
+                  "real_raging_bolt": deck_hash(rb_real_raging_bolt.my_deck),
+                  "lilies_clefairy": deck_hash(rb_lilies_clefairy.my_deck)},
     }
     if extra:
         man.update(extra)
@@ -891,7 +909,8 @@ def run_field(args) -> int:
     # Relabel the Lucario factory's "rulebased" -> "lucario" so the matrix reads cleanly (matches
     # eval_sb3's keying); the other three already name themselves after their deck.
     pool = [Agent("lucario", rulebased_lucario.agent, rulebased_lucario.my_deck),
-            make_abomasnow(), make_dragapult(), make_iono()]
+            make_abomasnow(), make_dragapult(), make_iono(), make_raging_bolt(),
+            make_real_raging_bolt(), make_lilies_clefairy()]
     names = [ag.name for ag in pool]
     n = 3 if args.smoke else args.field_games
     n_pairs = len(pool) * (len(pool) - 1) // 2

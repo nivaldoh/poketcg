@@ -615,3 +615,34 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   fixed CLAUDE.md's stale SB3-stack bullet (still described the retired stock MultiInputPolicy;
   now names tcg_net.py/sb3_policy.py/bc_collect.py/bc_train.py) and added a docs/cg-sdk.md pointer
   to the fuller docs/cabt-engine/ docs. Left model.md and trace.json in place (user call).
+
+2026-07-11 — NEW RULE-BASED AGENT: simple_raging_bolt_burn (Turbo Raging Bolt ex/Ogerpon; spec
+  `raging_bolt`). Implemented game_agents/rulebased/simple_raging_bolt_burn.py from the strategy-guide
+  stub on the iono/lucario skeleton, with two structural deviations the deck forced: count-aware
+  select answers (Bellowing Thunder's DISCARD_ENERGY_CARD select gets exactly ceil(hp/70) picks —
+  the template's [:maxCount] tail would discard the whole board), and pair-scored manual attach
+  (ATTACH options carry energy-in-hand x target; scoring only the target attaches the wrong TYPE in
+  a two-type-cost deck). Registered in eval.py (make_raging_bolt + field pool + manifest deck hash;
+  gauntlet pool left frozen) and record_battle.py. Iterated via trace mining (record_battle):
+  vs random 78%->96%; first attack turn 9.6->4.2; attack cadence 26%->58%; discard math 86/86 exact.
+  Final 200-game field (deck-confounded): 14% lucario / 30% abomasnow / 26% dragapult / 16% iono
+  (field means: lucario 68, dragapult 57, iono 54, abomasnow 50, raging_bolt 21). Plateau is
+  deck-structural: all-ex list feeds 2-3 prizes per KO, field aces are 320-350HP OHKO tanks (k=5
+  discards) vs ~2-3/turn sustainable fuel. Stop criterion hit (two runs with all-pairing CI overlap,
+  no recurring mistake category in loss reads). Write-up: docs/reports/raging_bolt_agent_report.md.
+  Also added the deck to CLAUDE.md's rule-based module list.
+
+2026-07-11 — Built the 7th rule-based agent: Lillie's Clefairy ex / Mega Kangaskhan ex
+  (game_agents/rulebased/lilies_clefairy_ex_mega_kangaskhan_ex.py, spec clefairy, deck CSV
+  decks/lilies_clefairy_ex_mega_kangaskhan_ex.csv = Kowalski NAIC-2026 list). Registered in
+  eval.py (import/factory/field pool/manifest) + record_battle.py. Final field (n=200/pairing):
+  pooled 51.0% (CI 48.2-53.8, n=1200) — mid-field, ~2x the raging-bolt agents; per-opp: lucario 45,
+  abomasnow 18, dragapult 53.5, iono 22, raging_bolt 85, real_raging_bolt 82.5. Floor vs random
+  90%, illegal selects 0/53k. Loss-mined fixes: bench starvation (ungate +20-Rondo-body benching
+  from the stadium; first Kangaskhan always benchable), 5-type pair-scored energy routing,
+  fund_retreat only at 1-missing, Ultra Ball expendable<=30, fodder promoted by prizes fed,
+  Eon Blade tank softener, and IS_FIRST flipped to go-first (field-measured; guide says second —
+  documented inconsistency, CLEFAIRY_GO_FIRST=0 reverts). Engine ground truth verified: Telepath
+  19 = {P}-only + TO_BENCH rider (new handler), Koraidon 979 Tera + attack ids 1408/1409 shifted,
+  Pearl = MAIN ATTACH pair. Stop criterion hit (two field runs, 49.5 -> 51.0, CIs overlap).
+  Write-up: docs/reports/lilies_clefairy_agent_report.md.
