@@ -2,8 +2,11 @@
 vendor/
 deck.csv
 
-# Proprietary competition game-engine source (LicenseRef-PTCG-ABC-Competition-Use-Only)
-ptcg_engine/
+# Proprietary competition game engine (LicenseRef-PTCG-ABC-Competition-Use-Only).
+# The SOURCE (ptcg_engine/ptcgProgram 22/, carrying our local state-replicator
+# modifications) IS committed because this repo is PRIVATE — it must never be
+# redistributed, made public, or shipped in a submission. Build artifacts stay out:
+ptcg_engine/build/
 
 # Training output / checkpoints
 out/

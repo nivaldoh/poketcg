@@ -21,10 +21,17 @@ labels, `win_mode.classify_end` for the ending, and `cg.game.visualize_data` for
     python record_battle.py --p0 random --p1 rulebased --out /tmp/t.json
     python record_battle.py --p0 out/sb3big_sb3.zip --p1 iono --deck lucario --out /tmp/m.json
 
-Agent specs: random | rulebased(=lucario) | abomasnow | dragapult | iono | a .pth (legacy MCTS,
+Agent specs: random | rulebased(=lucario) | abomasnow | dragapult | iono | raging_bolt | real_raging_bolt | clefairy | a .pth (legacy MCTS,
 plays sample_deck) | a .zip (SB3 MaskablePPO, plays --deck). The battle is one-at-a-time (the cg
-engine is a process-global singleton) and unseeded (no CRN) — the written trace IS the deterministic
-record you step through.
+engine is a process-global singleton) and, by default, unseeded (no CRN) — the written trace IS the
+deterministic record you step through.
+
+State replicator (needs the locally rebuilt engine — utils/build_libcg.sh + CG_LIB_PATH):
+  * `--seed N`         — play deterministic engine-seeded battles (game i of a session uses N+i)
+  * `--record-state`   — save a full-state engine blob per step (`step.state_blob`, plus
+                         `final_state_blob`) so any recorded position can be re-instantiated as a
+                         LIVE battle later via utils/resume_battle.py (replay or play-on). Opt-in:
+                         blobs add ~15-60 KB/step.
 """
 
 import argparse
@@ -38,7 +45,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # so the cg.* and rule-based imports below resolve. No training/eval is triggered by import.
 import torch as th  # noqa: E402  (already loaded via eval->tcg_model; used for the model trace)
 from eval import (Agent, make_random, make_rulebased, make_abomasnow,  # noqa: E402
-                  make_dragapult, make_iono, make_model, git_commit, wilson)
+                  make_dragapult, make_iono, make_raging_bolt, make_real_raging_bolt,
+                  make_lilies_clefairy,
+                  make_model, git_commit, wilson)
 from tcg_model import card_table, get_card, is_policy_select, auto_resolve  # noqa: E402
 from sb3_features import (attack_table, _resolve_option, encode_state,  # noqa: E402
                           STATE_DIM, N_ENERGY_TYPES, N_SELECT_TYPES, BENCH_SLOTS)
@@ -49,6 +58,7 @@ from cg.api import (OptionType, SelectType, SelectContext, SpecialConditionType,
                     CardType, LogType, EnergyType, to_observation_class)
 from cg.game import battle_start, battle_select, battle_finish, visualize_data  # noqa: E402
 from utils.run_smoketest_battle import load_deck  # noqa: E402
+import cg_state  # noqa: E402  (local save/restore bindings; inert on the stock .so)
 
 # SelectContext value -> a plain-English prompt (mirrors the inline comments in cg/api.py's
 # SelectContext; falls back to the prettified enum name for members added later in the competition).
@@ -309,28 +319,37 @@ def _card_meta(cid):
     return m
 
 
-def record_match(a: Agent, b: Agent, seat_a: int = 0) -> dict:
+def record_match(a: Agent, b: Agent, seat_a: int = 0, seed: int = 0, record_state: bool = False) -> dict:
     """Play one battle (agent `a` at seat `seat_a`) and return the full trace dict. Mirrors
     eval._play_one's driver loop, capturing a record before each battle_select and one god-view
-    snapshot array at the end (visualize_data() must be read BEFORE battle_finish frees the battle)."""
+    snapshot array at the end (visualize_data() must be read BEFORE battle_finish frees the battle).
+    `seed` != 0 plays an engine-deterministic battle; `record_state` attaches a full-state blob per
+    step (both need the rebuilt engine, see module docstring)."""
     decks = [None, None]
     decks[seat_a] = a.deck
     decks[1 - seat_a] = b.deck
-    obs, start = battle_start(decks[0], decks[1])
+    if seed:
+        obs, start = cg_state.battle_start_seeded(decks[0], decks[1], seed)
+    else:
+        obs, start = battle_start(decks[0], decks[1])
     if start.errorPlayer >= 0:
         raise ValueError(f"deck rejected: errorType={start.errorType} player={start.errorPlayer}")
 
     seen: set[int] = set(a.deck) | set(b.deck)
     steps = []
     while obs["current"]["result"] < 0:
+        state_blob = cg_state.save_state() if record_state else None
         yi = obs["current"]["yourIndex"]
         actor = a if yi == seat_a else b
         action = actor.fn(obs)                       # run the agent on the FULL obs (search blob intact)
         holder = getattr(actor, "trace", None)       # traced SB3 agents stash their introspection here
         model_info = holder["last"] if holder else None
         steps.append(_build_record(obs, yi, actor, action, len(steps), seen, model_info, seat_a))
+        if state_blob is not None:
+            steps[-1]["state_blob"] = state_blob
         obs = battle_select(action)
 
+    final_state_blob = cg_state.save_state() if record_state else None
     god = json.loads(visualize_data())               # one snapshot per step (+ terminal); read pre-finish
     result = obs["current"]["result"]
     end = classify_end(obs, seat_a)                  # hero(=agent a)-relative: how the game ended
@@ -342,12 +361,13 @@ def record_match(a: Agent, b: Agent, seat_a: int = 0) -> dict:
 
     # Report seat-agnostically: p0 = the debugged agent `a` (hero, at seat `seat_a`), p1 = opponent `b`.
     result_str = {1: f"{a.name} (hero) wins", -1: f"{b.name} wins", 0: "draw"}[end["win"]]
-    return {
+    trace = {
         "header": {
             "p0": a.name, "p1": b.name, "hero_seat": seat_a,
             "result": result,                        # raw engine result (seat-based 0/1/2)
             "result_str": result_str,
             "win_mode": end,                         # hero-relative: how the game ended
+            "seed": seed or None,                    # engine seed (None = stock nondeterministic run)
             "git_commit": git_commit(),
             "n_steps": len(steps),
             "cards": {str(cid): _card_meta(cid) for cid in sorted(seen)},
@@ -356,16 +376,20 @@ def record_match(a: Agent, b: Agent, seat_a: int = 0) -> dict:
         "steps": steps,
         "final_god": god[-1] if god else None,
     }
+    if final_state_blob is not None:
+        trace["final_state_blob"] = final_state_blob
+    return trace
 
 
-def record_session(a: Agent, b: Agent, n: int) -> dict:
+def record_session(a: Agent, b: Agent, n: int, seed: int = 0, record_state: bool = False) -> dict:
     """Play `n` seat-swapped games (like eval.play_match: agent a at seat i%2) and bundle them with a
     running eval summary — win% + Wilson CI + win-mode histograms — all from the hero (agent a) POV.
-    Reuses eval.wilson and win_mode.summarize_ends verbatim so the numbers match the eval harness."""
+    Reuses eval.wilson and win_mode.summarize_ends verbatim so the numbers match the eval harness.
+    With `seed` != 0, game i is engine-seeded with seed+i."""
     games, ends = [], []
     w = l = d = 0
     for i in range(n):
-        tr = record_match(a, b, seat_a=i % 2)
+        tr = record_match(a, b, seat_a=i % 2, seed=seed + i if seed else 0, record_state=record_state)
         end = tr["header"]["win_mode"]
         ends.append(end)
         w += end["win"] == 1
@@ -380,6 +404,7 @@ def record_session(a: Agent, b: Agent, n: int) -> dict:
             "p0": a.name, "p1": b.name, "n": n, "wins": w, "losses": l, "draws": d,
             "win_pct": round(p, 4), "ci_lo": round(lo, 4), "ci_hi": round(hi, 4),
             "decisive": w + l, "end_summary": summarize_ends(ends), "git_commit": git_commit(),
+            "seed": seed or None,                    # game i used engine seed seed+i (None = unseeded)
         },
         "games": games,
     }
@@ -445,6 +470,12 @@ def make_agent(spec: str, deck_name: str, greedy: bool) -> Agent:
         return make_dragapult()
     if key == "iono":
         return make_iono()
+    if key in ("raging_bolt", "simple_raging_bolt_burn"):
+        return make_raging_bolt()
+    if key in ("real_raging_bolt", "real_raging_bolt_burn"):
+        return make_real_raging_bolt()
+    if key in ("clefairy", "lilies_clefairy", "lilies_clefairy_ex_mega_kangaskhan_ex"):
+        return make_lilies_clefairy()
     if spec.endswith(".pth"):
         return make_model(spec)                      # legacy MyModel+MCTS; plays sample_deck
     if spec.endswith(".zip"):
@@ -456,7 +487,8 @@ def make_agent(spec: str, deck_name: str, greedy: bool) -> Agent:
         ag.trace = holder                            # record_match reads ag.trace["last"] per decision
         return ag
     raise SystemExit(f"unknown agent spec: {spec!r} "
-                     "(random|rulebased|abomasnow|dragapult|iono|<*.pth>|<*.zip>)")
+                     "(random|rulebased|abomasnow|dragapult|iono|raging_bolt|real_raging_bolt|"
+                     "clefairy|<*.pth>|<*.zip>)")
 
 
 def main() -> int:
@@ -471,14 +503,26 @@ def main() -> int:
     ap.add_argument("--games", type=int, default=1,
                     help="record a SESSION of N seat-swapped games (running win%% + CI + win-modes) "
                          "instead of one battle; the viewer gets a game picker + session summary")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="engine seed for deterministic battles (0 = stock nondeterministic; "
+                         "game i of a session uses seed+i; needs the rebuilt engine)")
+    ap.add_argument("--record-state", action="store_true",
+                    help="attach a full-state engine blob to every step (resume/replay via "
+                         "utils/resume_battle.py; needs the rebuilt engine)")
     ap.add_argument("--out", default="trace.json", help="output trace JSON path")
     args = ap.parse_args()
+
+    if (args.seed or args.record_state) and not cg_state.has_state_api():
+        raise SystemExit(
+            "--seed/--record-state need the locally rebuilt engine: run "
+            'utils/build_libcg.sh and set CG_LIB_PATH="$PWD/ptcg_engine/build/cg-lib"'
+        )
 
     a = make_agent(args.p0, args.deck, args.greedy)
     b = make_agent(args.p1, args.deck, args.greedy)
 
     if args.games > 1:
-        session = record_session(a, b, args.games)
+        session = record_session(a, b, args.games, seed=args.seed, record_state=args.record_state)
         with open(args.out, "w") as f:
             json.dump(session, f)
         s = session["session"]
@@ -489,7 +533,7 @@ def main() -> int:
               f"(95% CI {100 * s['ci_lo']:.1f}-{100 * s['ci_hi']:.1f}, n={s['decisive']}) | win-modes {wm}")
         return 0
 
-    trace = record_match(a, b)
+    trace = record_match(a, b, seed=args.seed, record_state=args.record_state)
     with open(args.out, "w") as f:
         json.dump(trace, f)
 

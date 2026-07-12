@@ -110,6 +110,16 @@ Description of the move effect or additional rule text.
 - `rulebased_agent_creator/creating_rulebased_agents.md` — the workflow for building a new rule-based agent for a deck (see also `game_agents/rulebased/<deck>.py` for existing examples).
 - `rulebased_agent_creator/validate_deck.py` — validates a decklist CSV (one card ID per row) against `data/EN_Card_Data.csv`: flags unknown card IDs and copy-count violations (max 4 per card, unlimited for Basic Energy). Run: `python rulebased_agent_creator/validate_deck.py decks/<deck>.csv`.
 
+## Modified local engine — state replicator (`ptcg_engine/`)
+The competition engine's C++ source (`ptcg_engine/ptcgProgram 22/`, the source of the vendored `libcg.so`) is committed here **with local modifications** that the stock engine lacks: battles can be seeded (deterministic) and saved/re-instantiated from an arbitrary mid-game state. Three added C-ABI exports — `BattleStartSeeded`, `SaveState`, `BattleStartFromState` (`Export.cpp`/`Api.h`; canonical serialization in `State.h`/`FixedList.h`/`GameFunction.h`) — power:
+- `record_battle.py --seed N --record-state` — deterministic traces carrying a full-state engine blob per step;
+- `utils/resume_battle.py` — restore any recorded position as a *live* battle, then verify byte-exact replay (`--replay`) or play it out with fresh agents (`--p0/--p1`);
+- `cg_state.py` — the Python bindings (degrade cleanly on the stock `.so`; `has_state_api()`).
+
+Build with `bash utils/build_libcg.sh`, then swap in via `CG_LIB_PATH="$PWD/ptcg_engine/build/cg-lib"`. Acceptance test: `utils/run_state_restore_test.py` (round-trip byte equality, god-view equality, deterministic replay, play-on smoke).
+
+**License note:** the engine is competition-use-only (`ptcg_engine/ptcgProgram 22/LICENSES`) — this repo must stay **private**, the source must not be redistributed, and neither the source nor a rebuilt `.so` ever goes into a Kaggle submission bundle (submissions use the stock vendored `cg/`).
+
 # Skills
 - Described in docs/skills_and_hooks.md.
 

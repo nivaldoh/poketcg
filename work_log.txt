@@ -646,3 +646,26 @@ any mn!=1||mx!=1 node, and both commit loops are shape-agnostic.
   19 = {P}-only + TO_BENCH rider (new handler), Koraidon 979 Tera + attack ids 1408/1409 shifted,
   Pearl = MAIN ATTACH pair. Stop criterion hit (two field runs, 49.5 -> 51.0, CIs overlap).
   Write-up: docs/reports/lilies_clefairy_agent_report.md.
+
+2026-07-11 — ENGINE STATE REPLICATOR (save/restore/seeded battles via a locally rebuilt libcg).
+  Modified the proprietary engine C++ source (ptcg_engine/ptcgProgram 22/; 5 files: Export.cpp =
+  new C-ABI exports, Api.h = save/restore impl, State.h/FixedList.h/GameFunction.h = canonical
+  serialization). Three added exports: BattleStartSeeded(cards, seed) (deterministic battle —
+  deviceRand off, fixed mt19937), SaveState(ApiData*) (full god-view state blob incl. the RNG
+  cursor, base64 SerialData, no fog erase), BattleStartFromState(blob, len) (re-instantiate a LIVE
+  battle from a blob; a magic word rejects blobs from a mismatched build). Build =
+  utils/build_libcg.sh (g++ -std=c++20, -static-libstdc++ + --exclude-libs,ALL against the
+  conda-vs-system libstdc++ interposition crash; outputs ptcg_engine/build/cg-lib with the vendored
+  wrapper .py symlinked in; swap in via CG_LIB_PATH). Python bindings = cg_state.py (has_state_api()
+  degrades cleanly on the stock .so). record_battle.py grew --seed N (session game i uses seed N+i;
+  header records it) and opt-in --record-state (per-step step.state_blob + final_state_blob,
+  ~15-60 KB/step). utils/resume_battle.py restores any recorded position and either --replay
+  (re-feed the trace's remaining actions; byte-exact verification, meaningful for seeded traces
+  only) or plays it out with fresh --p0/--p1 agent specs. Acceptance =
+  utils/run_state_restore_test.py, 4 layers: (a) blob round-trip byte equality + fog-obs equality,
+  (b) god-view equality at the restore step (logs/selected excluded by design — the engine's log
+  cursor advances before the save), (c) deterministic trajectory replay to an identical result,
+  (d) restore-and-play-on smoke. ALL PASSED (re-run at commit time). Unlocks: positional debugging,
+  branching rollouts from real positions, seeded/deterministic local eval. LOCAL TOOL ONLY — the
+  rebuilt .so never ships in a submission; engine source committed to this PRIVATE repo (2026-07-11)
+  with the license note kept in .gitignore/README (competition-use-only, never redistribute).
